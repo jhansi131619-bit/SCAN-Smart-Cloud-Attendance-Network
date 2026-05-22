@@ -1,4 +1,4 @@
-import React, { useState, useRef, useCallback } from 'react';
+import React, { useState, useRef, useCallback, useEffect } from 'react';
 import Webcam from 'react-webcam';
 import {
   Box,
@@ -8,9 +8,12 @@ import {
   Alert,
   Card,
   Stack,
-  CircularProgress
+  CircularProgress,
+  ToggleButton,
+  ToggleButtonGroup,
+  Divider
 } from '@mui/material';
-import { PersonAdd, CheckCircle } from '@mui/icons-material';
+import { PersonAdd, CheckCircle, Videocam, CameraAlt } from '@mui/icons-material';
 import axios from 'axios';
 import { API_BASE_URL } from '../config';
 
@@ -20,6 +23,20 @@ function AddPerson() {
   const [isLoading, setIsLoading] = useState(false);
   const [message, setMessage] = useState('');
   const [isSuccess, setIsSuccess] = useState(false);
+  const [captureMode, setCaptureMode] = useState<'browser' | 'backend'>('backend');
+  const [backendStreamError, setBackendStreamError] = useState<string | null>(null);
+
+  // Retrieve threshold from settings
+  const savedSettings = localStorage.getItem('attendanceSettings');
+  const settings = savedSettings ? JSON.parse(savedSettings) : {};
+  const threshold = settings.confidenceThreshold !== undefined ? settings.confidenceThreshold : 0.65;
+
+  // Release backend camera on unmount to prevent device locking
+  useEffect(() => {
+    return () => {
+      axios.post(`${API_BASE_URL}/api/camera-control/stop`).catch(() => {});
+    };
+  }, []);
 
   const playAudio = useCallback((audioFile: string) => {
     try {
@@ -59,32 +76,54 @@ function AddPerson() {
       return;
     }
 
-    const imageSrc = webcamRef.current?.getScreenshot();
-    if (!imageSrc) {
-      setMessage('Please make sure camera is working');
-      setIsSuccess(false);
-      return;
-    }
-
     setIsLoading(true);
     setMessage('');
+    setBackendStreamError(null);
 
-    try {
-      await axios.post(`${API_BASE_URL}/add-person`, {
-        name: name.trim(),
-        image: imageSrc
-      });
+    if (captureMode === 'browser') {
+      const imageSrc = webcamRef.current?.getScreenshot();
+      if (!imageSrc) {
+        setMessage('Please make sure camera is working, or switch to SCAN Live Feed');
+        setIsSuccess(false);
+        setIsLoading(false);
+        return;
+      }
 
-      setMessage(`Successfully added ${name} to the system!`);
-      setIsSuccess(true);
-      setName('');
-      playAudio('person_added_successfully.wav');
-    } catch (error: any) {
-      setMessage(error.response?.data?.message || 'Failed to add person');
-      setIsSuccess(false);
-      playAudio('person_not_detected.wav');
-    } finally {
-      setIsLoading(false);
+      try {
+        await axios.post(`${API_BASE_URL}/add-person`, {
+          name: name.trim(),
+          image: imageSrc
+        });
+
+        setMessage(`Successfully added ${name} to the system!`);
+        setIsSuccess(true);
+        setName('');
+        playAudio('person_added_successfully.wav');
+      } catch (error: any) {
+        setMessage(error.response?.data?.message || 'Failed to add person. Try switching to SCAN Live Feed if face detection fails.');
+        setIsSuccess(false);
+        playAudio('person_not_detected.wav');
+      } finally {
+        setIsLoading(false);
+      }
+    } else {
+      // Backend capture mode
+      try {
+        await axios.post(`${API_BASE_URL}/add-person-backend`, {
+          name: name.trim()
+        });
+
+        setMessage(`Successfully added ${name} to the system using SCAN camera!`);
+        setIsSuccess(true);
+        setName('');
+        playAudio('person_added_successfully.wav');
+      } catch (error: any) {
+        setMessage(error.response?.data?.message || 'Failed to add person using SCAN camera feed. Make sure you look directly at the camera.');
+        setIsSuccess(false);
+        playAudio('person_not_detected.wav');
+      } finally {
+        setIsLoading(false);
+      }
     }
   };
 
@@ -113,40 +152,149 @@ function AddPerson() {
             fullWidth
             placeholder="Enter person's name"
             variant="outlined"
-            size={window.innerWidth < 600 ? 'medium' : 'medium'}
           />
 
-          {/* Camera */}
-          <Box>
-            <Typography 
-              variant="subtitle1" 
-              gutterBottom 
-              sx={{ 
-                fontWeight: 500,
-                fontSize: { xs: '1rem', sm: '1.125rem' }
-              }}
-            >
-               Take Photo
+          {/* Photo Source Selector */}
+          <Box sx={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 1 }}>
+            <Typography variant="subtitle2" color="text.secondary">
+              Camera Source Selector
             </Typography>
-            <Box sx={{ 
-              borderRadius: 2, 
-              overflow: 'hidden',
-              border: '2px solid #e0e0e0',
-              maxWidth: { xs: '100%', sm: 400 },
-              mx: 'auto'
-            }}>
-              <Webcam
-                ref={webcamRef}
-                screenshotFormat="image/jpeg"
-                width="100%"
-                style={{ display: 'block' }}
-                videoConstraints={{
-                  width: { ideal: 640 },
-                  height: { ideal: 480 },
-                  facingMode: "user"
-                }}
-              />
-            </Box>
+            <ToggleButtonGroup
+              value={captureMode}
+              exclusive
+              onChange={(e, value) => {
+                if (value !== null) {
+                  setCaptureMode(value);
+                  setMessage('');
+                  if (value === 'browser') {
+                    axios.post(`${API_BASE_URL}/api/camera-control/stop`).catch(() => {});
+                  }
+                }
+              }}
+              aria-label="camera source"
+              size="small"
+              color="primary"
+            >
+              <ToggleButton value="browser" sx={{ px: 2, py: 1, display: 'flex', gap: 1 }}>
+                <Videocam fontSize="small" />
+                Browser Webcam
+              </ToggleButton>
+              <ToggleButton value="backend" sx={{ px: 2, py: 1, display: 'flex', gap: 1 }}>
+                <CameraAlt fontSize="small" />
+                SCAN Live Feed
+              </ToggleButton>
+            </ToggleButtonGroup>
+          </Box>
+
+          <Divider />
+
+          {/* Camera Viewport */}
+          <Box>
+            {captureMode === 'browser' ? (
+              <Box>
+                <Typography 
+                  variant="subtitle1" 
+                  gutterBottom 
+                  sx={{ 
+                    fontWeight: 500,
+                    fontSize: { xs: '0.9rem', sm: '1rem' },
+                    textAlign: 'center',
+                    mb: 1.5
+                  }}
+                >
+                   Take Photo (Browser Camera)
+                </Typography>
+                <Box sx={{ 
+                  borderRadius: 2, 
+                  overflow: 'hidden',
+                  border: '2px solid #e0e0e0',
+                  maxWidth: { xs: '100%', sm: 400 },
+                  mx: 'auto',
+                  position: 'relative'
+                }}>
+                  <Webcam
+                    ref={webcamRef}
+                    screenshotFormat="image/jpeg"
+                    width="100%"
+                    style={{ display: 'block' }}
+                    videoConstraints={{
+                      width: { ideal: 640 },
+                      height: { ideal: 480 },
+                      facingMode: "user"
+                    }}
+                    onUserMediaError={() => {
+                      setMessage("Browser webcam failed to load. The camera is likely locked by the backend stream. Please select 'SCAN Live Feed' above!");
+                      setIsSuccess(false);
+                    }}
+                  />
+                </Box>
+              </Box>
+            ) : (
+              <Box>
+                <Typography 
+                  variant="subtitle1" 
+                  gutterBottom 
+                  sx={{ 
+                    fontWeight: 500,
+                    fontSize: { xs: '0.9rem', sm: '1rem' },
+                    textAlign: 'center',
+                    mb: 1.5
+                  }}
+                >
+                   SCAN Live Camera Feed (Processed)
+                </Typography>
+                <Box sx={{ 
+                  borderRadius: 2, 
+                  overflow: 'hidden',
+                  border: '2px solid #e0e0e0',
+                  maxWidth: { xs: '100%', sm: 400 },
+                  mx: 'auto',
+                  position: 'relative',
+                  aspectRatio: '4/3',
+                  bgcolor: 'black'
+                }}>
+                  <img
+                    src={`${API_BASE_URL}/video_feed?threshold=${threshold}&t=${Date.now()}`}
+                    alt="SCAN Live Feed"
+                    style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block' }}
+                    onError={() => {
+                      setBackendStreamError("Failed to connect to SCAN video stream. Verify that your backend is running.");
+                    }}
+                  />
+                  <Box sx={{ 
+                    position: 'absolute', 
+                    top: 10, 
+                    right: 10, 
+                    bgcolor: 'error.main', 
+                    color: 'white', 
+                    px: 1, 
+                    py: 0.5, 
+                    borderRadius: 1,
+                    fontSize: '0.75rem',
+                    fontWeight: 'bold',
+                    zIndex: 10
+                  }}>
+                    LIVE
+                  </Box>
+                  {backendStreamError && (
+                    <Box sx={{ 
+                      position: 'absolute', 
+                      inset: 0, 
+                      bgcolor: 'rgba(0,0,0,0.85)', 
+                      display: 'flex', 
+                      alignItems: 'center', 
+                      justifyContent: 'center', 
+                      color: 'white',
+                      p: 2,
+                      textAlign: 'center',
+                      zIndex: 9
+                    }}>
+                      <Typography variant="body2">{backendStreamError}</Typography>
+                    </Box>
+                  )}
+                </Box>
+              </Box>
+            )}
           </Box>
 
           {/* Add Button */}
@@ -157,10 +305,7 @@ function AddPerson() {
             startIcon={isLoading ? <CircularProgress size={20} /> : <PersonAdd />}
             size="large"
             fullWidth
-            sx={{ 
-              py: { xs: 1.5, sm: 1.25 },
-              fontSize: { xs: '1rem', sm: '0.875rem' }
-            }}
+            sx={{ py: 1.5 }}
           >
             {isLoading ? 'Adding Person...' : 'Add Person'}
           </Button>
@@ -192,8 +337,9 @@ function AddPerson() {
             lineHeight: 1.4
           }}
         >
-           <strong>Tips:</strong> Make sure your face is clearly visible and well-lit. 
-          Look directly at the camera when taking the photo.
+           <strong>Tips:</strong> Make sure your face is clearly visible. If you select 
+           <strong> SCAN Live Feed</strong>, the photo is captured directly from the camera 
+           running in the backend. Look straight at the physical camera lens!
         </Typography>
       </Card>
     </Box>

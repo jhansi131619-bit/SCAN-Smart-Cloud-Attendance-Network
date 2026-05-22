@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import {
   Box,
   Typography,
@@ -72,33 +72,7 @@ function Reports() {
     fetchData();
   }, []);
 
-  useEffect(() => {
-    applyFilters();
-  }, [records, filters]);
-
-  const fetchData = async () => {
-    try {
-      setIsLoading(true);
-      setError(null);
-      
-      const [attendanceResponse, facesResponse] = await Promise.all([
-        axios.get(`${API_BASE_URL}/attendance-records`),
-        axios.get(`${API_BASE_URL}/known-faces`)
-      ]);
-
-      const attendanceData = attendanceResponse.data.records || [];
-      const facesData = facesResponse.data.faces || [];
-      
-      setRecords(attendanceData);
-      setKnownPeople(facesData.map((face: any) => face.name));
-    } catch (err: any) {
-      setError(err.response?.data?.message || 'Failed to fetch data');
-    } finally {
-      setIsLoading(false);
-    }
-  };
-
-  const applyFilters = () => {
+  const applyFilters = useCallback(() => {
     let filtered = records.filter(record => {
       // Date filter
       const recordDate = new Date(record.date);
@@ -123,6 +97,32 @@ function Reports() {
     });
 
     setFilteredRecords(filtered);
+  }, [records, filters]);
+
+  useEffect(() => {
+    applyFilters();
+  }, [applyFilters]);
+
+  const fetchData = async () => {
+    try {
+      setIsLoading(true);
+      setError(null);
+      
+      const [attendanceResponse, facesResponse] = await Promise.all([
+        axios.get(`${API_BASE_URL}/attendance-records`),
+        axios.get(`${API_BASE_URL}/known-faces`),
+      ]);
+
+      const attendanceData = attendanceResponse.data.records || [];
+      const facesData = facesResponse.data.people || [];
+      
+      setRecords(attendanceData);
+      setKnownPeople(facesData.map((face: any) => face.name));
+    } catch (err: any) {
+      setError(err.response?.data?.message || 'Failed to fetch data');
+    } finally {
+      setIsLoading(false);
+    }
   };
 
   const generatePersonStats = (personName: string): AttendanceStats => {

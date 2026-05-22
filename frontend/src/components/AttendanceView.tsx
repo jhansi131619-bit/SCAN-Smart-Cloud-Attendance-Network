@@ -99,7 +99,7 @@ function AttendanceView() {
   
   // Statistics
   const [showStats, setShowStats] = useState(false);
-  const [autoRefresh, setAutoRefresh] = useState(false);
+  const [autoRefresh, setAutoRefresh] = useState(true);
 
   useEffect(() => {
     fetchAttendanceRecords();
@@ -115,7 +115,7 @@ function AttendanceView() {
     if (autoRefresh) {
       interval = setInterval(() => {
         refreshAttendanceRecords();
-      }, 30000); // Refresh every 30 seconds
+      }, 2000); // Refresh every 2 seconds
     }
     return () => {
       if (interval) clearInterval(interval);
@@ -127,7 +127,7 @@ function AttendanceView() {
       setIsLoading(true);
       setError(null);
       
-      const response = await axios.get(`${API_BASE_URL}/attendance-records`);
+      const response = await axios.get(`${API_BASE_URL}/api/attendance`);
       setRecords(response.data.records || []);
     } catch (err: any) {
       setError(err.response?.data?.message || 'Failed to fetch attendance records');
@@ -148,7 +148,7 @@ function AttendanceView() {
   const refreshAttendanceRecords = async () => {
     try {
       setRefreshing(true);
-      const response = await axios.get(`${API_BASE_URL}/attendance-records`);
+      const response = await axios.get(`${API_BASE_URL}/api/attendance`);
       setRecords(response.data.records || []);
     } catch (err: any) {
       setError(err.response?.data?.message || 'Failed to refresh attendance records');

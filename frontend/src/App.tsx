@@ -28,6 +28,7 @@ import {
 import { 
   CameraAlt, 
   PersonAdd, 
+  People,
   List, 
   Assessment,
   Settings as SettingsIcon,
@@ -41,6 +42,7 @@ import {
 } from '@mui/icons-material';
 import AttendanceCapture from './components/AttendanceCapture';
 import AddPerson from './components/AddPerson';
+import KnownFaces from './components/KnownFaces';
 import AttendanceView from './components/AttendanceView';
 import Reports from './components/Reports';
 import Settings from './components/Settings';
@@ -155,7 +157,7 @@ function App() {
   const checkConnection = async () => {
     try {
       setConnectionStatus('checking');
-      const response = await axios.get(`${API_BASE_URL}/health`, { timeout: 5000 });
+      const response = await axios.get(`${API_BASE_URL}/api/health`, { timeout: 5000 });
       if (response.status === 200) {
         setConnectionStatus('connected');
         if (showConnectionAlert) {
@@ -188,6 +190,11 @@ function App() {
     setTabValue(newValue);
     setIsLoading(true);
     
+    // Release the backend camera immediately on any tab navigation to prevent hardware conflicts
+    axios.post(`${API_BASE_URL}/api/camera-control/stop`).catch(err => {
+      console.warn('Failed to stop camera on navigation:', err);
+    });
+    
     // Simulate loading delay for better UX
     setTimeout(() => setIsLoading(false), 300);
   };
@@ -216,11 +223,12 @@ function App() {
   };
 
   const tabLabels = [
-  { icon: <CameraAlt />, label: 'Mark Attendance', shortLabel: 'Attendance' },
-  { icon: <PersonAdd />, label: 'Add Person', shortLabel: 'Add' },
-  { icon: <List />, label: 'View Records', shortLabel: 'Records' },
-  { icon: <Assessment />, label: 'Reports', shortLabel: 'Reports' },
-  { icon: <SettingsIcon />, label: 'Settings', shortLabel: 'Settings' }
+    { icon: <CameraAlt />, label: 'Mark Attendance', shortLabel: 'Attendance' },
+    { icon: <PersonAdd />, label: 'Add Person', shortLabel: 'Add' },
+    { icon: <People />, label: 'Manage People', shortLabel: 'Manage' },
+    { icon: <List />, label: 'View Records', shortLabel: 'Records' },
+    { icon: <Assessment />, label: 'Reports', shortLabel: 'Reports' },
+    { icon: <SettingsIcon />, label: 'Settings', shortLabel: 'Settings' }
   ];
 
   return (
@@ -252,7 +260,7 @@ function App() {
                   display: { xs: 'none', sm: 'block' }
                 }}
               >
-                Smart Attendance System
+                SCAN: Smart Cloud Attendance Network
               </Typography>
               <Typography 
                 variant="h6" 
@@ -263,7 +271,7 @@ function App() {
                   display: { xs: 'block', sm: 'none' }
                 }}
               >
-                Attendance
+                SCAN
               </Typography>
             </Box>
             
@@ -380,12 +388,15 @@ function App() {
               <AddPerson />
             </TabPanel>
             <TabPanel value={tabValue} index={2}>
-              <AttendanceView />
+              <KnownFaces />
             </TabPanel>
             <TabPanel value={tabValue} index={3}>
-              <Reports />
+              <AttendanceView />
             </TabPanel>
             <TabPanel value={tabValue} index={4}>
+              <Reports />
+            </TabPanel>
+            <TabPanel value={tabValue} index={5}>
               <Settings />
             </TabPanel>
           </Paper>
@@ -417,24 +428,24 @@ function App() {
           fullWidth
         >
           <DialogTitle>
-            📱 Smart Attendance System
+            🏛️ SCAN: Smart Cloud Attendance Network
           </DialogTitle>
           <DialogContent>
             <Typography paragraph>
-              A modern face recognition-based attendance system built with React and Flask.
+              A premium, high-performance face recognition attendance platform with real-time server-side MJPEG video streaming and MongoDB Atlas cloud synchronization.
             </Typography>
             <Typography paragraph>
               <strong>Features:</strong>
             </Typography>
             <ul>
-              <li>Real-time face recognition</li>
-              <li>Automated attendance marking</li>
-              <li>Comprehensive reporting</li>
-              <li>User-friendly interface</li>
-              <li>Secure data management</li>
+              <li>High-compatibility DirectShow camera capture</li>
+              <li>Automated attendance marking via cloud database</li>
+              <li>Real-time MJPEG stream with facial boundaries overlay</li>
+              <li>Sleek, fluid user dashboard</li>
+              <li>Optimistic daily duplicate prevention checks</li>
             </ul>
             <Typography paragraph>
-              <strong>Version:</strong> 2.0.0<br />
+              <strong>Version:</strong> 3.0.0 (SCAN Rebrand)<br />
               <strong>Last Activity:</strong> {lastActivity || 'None'}
             </Typography>
           </DialogContent>

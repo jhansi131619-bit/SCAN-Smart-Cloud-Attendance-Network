@@ -1,51 +1,76 @@
-import React, { useState, useRef, useCallback } from 'react';
-import Webcam from 'react-webcam';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import {
   Box,
-  Button,
   Typography,
-  Alert,
   Card,
-  Switch,
-  FormControlLabel,
+  Alert,
   Chip,
-  CircularProgress,
   Stack,
-  Divider
+  Divider,
+  CircularProgress
 } from '@mui/material';
-import { 
-  CameraAlt, 
-  Stop, 
-  CheckCircle, 
-  ErrorOutline,
-  AutoMode 
-} from '@mui/icons-material';
+import { CheckCircle, ErrorOutline, Videocam } from '@mui/icons-material';
 import axios from 'axios';
-import { API_BASE_URL, AUDIO_BASE_URL } from '../config';
+import { API_BASE_URL } from '../config';
 
-interface AttendanceResponse {
+interface FaceResult {
   name: string;
   confidence: number;
-  timestamp: string;
-  success: boolean;
-  message: string;
-  cooldown?: boolean;
-  remaining_seconds?: number;
-  audio?: string;
+  box: { x: number; y: number; w: number; h: number };
+  liveness: string;
+}
+
+/**
+ * Returns a color based on SCAN confidence thresholds:
+ *   ≥80  → green  (high confidence – attendance marked)
+ *  50–79 → yellow (moderate – verifying)
+ *   <50  → red    (low / unrecognized)
+ */
+function getScoreColor(score: number): string {
+  if (score >= 80) return '#4caf50';   // green – high confidence
+  if (score >= 50) return '#ffc107';   // yellow – moderate
+  return '#f44336';                     // red – low / unknown
+}
+
+/** Pulsing glow keyframes injected once via <style> tag */
+const GLOW_KEYFRAMES = `
+@keyframes scorePulse {
+  0%, 100% { box-shadow: 0 0 12px var(--glow-color); }
+  50%      { box-shadow: 0 0 28px var(--glow-color), 0 0 48px var(--glow-color); }
+}
+`;
+
+/** Inject keyframes once on module load */
+if (typeof document !== 'undefined' && !document.getElementById('scan-score-keyframes')) {
+  const style = document.createElement('style');
+  style.id = 'scan-score-keyframes';
+  style.textContent = GLOW_KEYFRAMES;
+  document.head.appendChild(style);
 }
 
 function AttendanceCapture() {
-  const webcamRef = useRef<Webcam>(null);
-  const [isCapturing, setIsCapturing] = useState(false);
-  const [isAutoMode, setIsAutoMode] = useState(false);
-  const [lastResult, setLastResult] = useState<AttendanceResponse | null>(null);
-  const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [connectionStatus, setConnectionStatus] = useState<'connected' | 'disconnected' | 'checking'>('checking');
-  const recognitionIntervalRef = useRef<NodeJS.Timeout | null>(null);
+  
+  const videoRef = useRef<HTMLVideoElement>(null);
+  const canvasOverlayRef = useRef<HTMLCanvasElement>(null);
+  const hiddenCanvasRef = useRef<HTMLCanvasElement>(null);
+  
+  const [isProcessing, setIsProcessing] = useState(false);
+  const streamRef = useRef<MediaStream | null>(null);
+  const intervalRef = useRef<NodeJS.Timeout | null>(null);
 
-  // Check backend connection on component mount
-  React.useEffect(() => {
+  // --- Emotion / confidence score state (facemeet-inspired) ---
+  const [avgScore, setAvgScore] = useState<number>(0);
+  const [lastRecognizedName, setLastRecognizedName] = useState<string | null>(null);
+
+  // Retrieve threshold from settings
+  const savedSettings = localStorage.getItem('attendanceSettings');
+  const settings = savedSettings ? JSON.parse(savedSettings) : {};
+  const threshold = settings.confidenceThreshold !== undefined ? settings.confidenceThreshold : 0.65;
+
+  // Check backend connection
+  useEffect(() => {
     const checkConnection = async () => {
       try {
         const response = await axios.get(`${API_BASE_URL}/api/health`, { timeout: 5000 });
@@ -54,402 +79,305 @@ function AttendanceCapture() {
         } else {
           setConnectionStatus('disconnected');
         }
-      } catch (error) {
+      } catch (err) {
         setConnectionStatus('disconnected');
-        console.error('Backend connection failed:', error);
+        console.error('Backend connection failed:', err);
       }
     };
-
     checkConnection();
-    // Check connection every 30 seconds
-    const interval = setInterval(checkConnection, 30000);
+    const interval = setInterval(checkConnection, 15000);
     return () => clearInterval(interval);
   }, []);
 
-  const playAudio = useCallback((audioFile: string) => {
-    try {
-      const audio = new Audio(`${API_BASE_URL}/audio/${audioFile}`);
-      audio.volume = 0.8;
-      audio.play().catch(err => {
-        console.warn('Audio playback failed:', err);
-        // Fallback to text-to-speech if audio fails
-        if ('speechSynthesis' in window) {
-          let text = '';
-          switch(audioFile) {
-            case 'attendance_marked.wav':
-              text = 'Attendance marked successfully';
-              break;
-            case 'person_not_detected.wav':
-              text = 'Person not detected';
-              break;
-            case 'attendance_is_already_marked.wav':
-              text = 'Attendance is already marked';
-              break;
-            case 'person_added_successfully.wav':
-              text = 'Person added successfully';
-              break;
-            default:
-              text = 'Operation completed';
-          }
-          const utterance = new SpeechSynthesisUtterance(text);
-          utterance.rate = 0.9;
-          utterance.pitch = 1;
-          utterance.volume = 0.8;
-          speechSynthesis.speak(utterance);
+  // Setup WebRTC and the Poll Loop
+  useEffect(() => {
+    const startCamera = async () => {
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({ 
+          video: { facingMode: 'user', width: { ideal: 640 }, height: { ideal: 480 } },
+          audio: false
+        });
+        
+        if (videoRef.current) {
+          videoRef.current.srcObject = stream;
+          streamRef.current = stream;
         }
-      });
-    } catch (err) {
-      console.warn('Audio creation failed:', err);
-    }
-  }, []);
-
-  const speak = useCallback((text: string) => {
-    if ('speechSynthesis' in window) {
-      const utterance = new SpeechSynthesisUtterance(text);
-      utterance.rate = 0.9;
-      utterance.pitch = 1;
-      utterance.volume = 0.8;
-      speechSynthesis.speak(utterance);
-    }
-  }, []);
-
-  const performRecognition = useCallback(async () => {
-    if (!webcamRef.current) return;
-
-    try {
-      setIsLoading(true);
-      setError(null);
-      
-      const imageSrc = webcamRef.current.getScreenshot();
-      if (!imageSrc) {
-        throw new Error('Failed to capture image');
+      } catch (err) {
+        console.error('Error accessing webcam:', err);
+        setError('Unable to access webcam. Please ensure permissions are granted.');
       }
-
-      const response = await axios.post<AttendanceResponse>(
-        `${API_BASE_URL}/api/mark-attendance`,
-        { image: imageSrc },
-        { timeout: 10000 }
-      );
-
-      setLastResult(response.data);
-      
-      // Play audio based on the backend response
-      if (response.data.audio) {
-        playAudio(`${response.data.audio}.wav`);
-      } else if (response.data.success) {
-        playAudio('attendance_marked.wav');
-      } else {
-        playAudio('person_not_detected.wav');
-      }
-    } catch (err: any) {
-      let errorMessage = 'Recognition failed';
-      
-      if (err.code === 'ECONNABORTED' || err.message.includes('timeout')) {
-        errorMessage = 'Request timeout - Please check your connection';
-        setConnectionStatus('disconnected');
-      } else if (err.response?.status === 500) {
-        errorMessage = 'Server error - Please try again';
-      } else if (err.response?.status === 404) {
-        errorMessage = 'Service not found - Please check backend deployment';
-      } else if (err.response?.data?.message) {
-        errorMessage = err.response.data.message;
-      } else if (err.message) {
-        errorMessage = err.message;
-      }
-      
-      console.error('Recognition error:', err);
-      setError(errorMessage);
-      
-      // Set a failed result to show in UI
-      setLastResult({
-        name: '',
-        confidence: 0,
-        timestamp: new Date().toISOString(),
-        success: false,
-        message: errorMessage
-      });
-      
-      playAudio('person_not_detected.wav');
-    } finally {
-      setIsLoading(false);
-    }
-  }, [playAudio]);
-
-  const startAutoRecognition = useCallback(() => {
-    if (recognitionIntervalRef.current) return;
-    
-    recognitionIntervalRef.current = setInterval(() => {
-      performRecognition();
-    }, 3000);
-  }, [performRecognition]);
-
-  const stopAutoRecognition = useCallback(() => {
-    if (recognitionIntervalRef.current) {
-      clearInterval(recognitionIntervalRef.current);
-      recognitionIntervalRef.current = null;
-    }
-  }, []);
-
-  const handleAutoModeToggle = (event: React.ChangeEvent<HTMLInputElement>) => {
-    const enabled = event.target.checked;
-    setIsAutoMode(enabled);
-    
-    if (enabled) {
-      setIsCapturing(true);
-      startAutoRecognition();
-    } else {
-      stopAutoRecognition();
-    }
-  };
-
-  const handleManualCapture = () => {
-    if (isAutoMode) return;
-    performRecognition();
-  };
-
-  const handleStopCapture = () => {
-    setIsCapturing(false);
-    setIsAutoMode(false);
-    stopAutoRecognition();
-    setLastResult(null);
-    setError(null);
-  };
-
-  React.useEffect(() => {
-    return () => {
-      stopAutoRecognition();
     };
-  }, [stopAutoRecognition]);
+
+    startCamera();
+
+    // The polling loop function
+    const captureAndSend = async () => {
+      if (!videoRef.current || !hiddenCanvasRef.current || !canvasOverlayRef.current) return;
+      if (videoRef.current.readyState !== videoRef.current.HAVE_ENOUGH_DATA) return;
+      
+      const video = videoRef.current;
+      const hiddenCanvas = hiddenCanvasRef.current;
+      const overlayCanvas = canvasOverlayRef.current;
+      
+      // Ensure canvases match video dimensions
+      if (hiddenCanvas.width !== video.videoWidth || hiddenCanvas.height !== video.videoHeight) {
+        hiddenCanvas.width = video.videoWidth;
+        hiddenCanvas.height = video.videoHeight;
+        overlayCanvas.width = video.videoWidth;
+        overlayCanvas.height = video.videoHeight;
+      }
+      
+      const hiddenCtx = hiddenCanvas.getContext('2d');
+      if (!hiddenCtx) return;
+      
+      // Draw current frame to hidden canvas
+      hiddenCtx.drawImage(video, 0, 0, hiddenCanvas.width, hiddenCanvas.height);
+      
+      // Extract Base64
+      const base64Image = hiddenCanvas.toDataURL('image/jpeg', 0.5);
+      
+      try {
+        setIsProcessing(true);
+        const response = await axios.post(`${API_BASE_URL}/api/recognize`, {
+          image: base64Image,
+          threshold: threshold
+        });
+        
+        const faces: FaceResult[] = response.data.faces || [];
+
+        // ── Compute average confidence score (facemeet-style) ──
+        if (faces.length > 0) {
+          const total = faces.reduce((sum, f) => sum + f.confidence, 0);
+          const avg = total / faces.length;
+          setAvgScore(parseFloat(avg.toFixed(1)));
+
+          // Track the most-confident recognized name
+          const recognized = faces.filter(f => f.name !== 'Unknown' && f.confidence > 0);
+          if (recognized.length > 0) {
+            const best = recognized.reduce((a, b) => a.confidence > b.confidence ? a : b);
+            setLastRecognizedName(best.name);
+          } else {
+            setLastRecognizedName(null);
+          }
+        } else {
+          // Decay score smoothly toward 0 when no faces present
+          setAvgScore(prev => parseFloat((prev * 0.7).toFixed(1)));
+          setLastRecognizedName(null);
+        }
+        
+        // Clear overlay
+        const overlayCtx = overlayCanvas.getContext('2d');
+        if (overlayCtx) {
+          overlayCtx.clearRect(0, 0, overlayCanvas.width, overlayCanvas.height);
+          
+          // Draw each face
+          faces.forEach(face => {
+            const { x, y, w, h } = face.box;
+            
+            // Determine color based on liveness
+            let strokeColor = '#f44336'; // Red
+            if (face.liveness === 'passed') strokeColor = '#4caf50'; // Green
+            else if (face.liveness === 'verifying') strokeColor = '#ff9800'; // Orange
+            
+            // Draw Box
+            overlayCtx.strokeStyle = strokeColor;
+            overlayCtx.lineWidth = 3;
+            overlayCtx.strokeRect(x, y, w, h);
+            
+            // Label Background
+            overlayCtx.fillStyle = strokeColor;
+            const text = face.name !== 'Unknown' && face.confidence > 0 
+              ? `${face.name} (${face.confidence}%)` 
+              : face.name;
+              
+            overlayCtx.fillRect(x, y - 30, w, 30);
+            
+            // Text
+            overlayCtx.fillStyle = 'white';
+            overlayCtx.font = 'bold 16px Arial';
+            overlayCtx.fillText(text, x + 5, y - 10);
+          });
+        }
+        
+      } catch (err: any) {
+        console.error('Recognition error:', err);
+      } finally {
+        setIsProcessing(false);
+      }
+    };
+
+    // Run interval every 1 second
+    intervalRef.current = setInterval(captureAndSend, 1000);
+
+    return () => {
+      // Cleanup interval and tracks
+      if (intervalRef.current) clearInterval(intervalRef.current);
+      if (streamRef.current) {
+        streamRef.current.getTracks().forEach(track => track.stop());
+      }
+    };
+  }, [threshold]);
+
+  // Derived values for the score badge
+  const scoreColor = getScoreColor(avgScore);
+  const scoreLabel =
+    avgScore >= 80 ? 'Verified' :
+    avgScore >= 50 ? 'Verifying' :
+    avgScore > 0   ? 'Uncertain' :
+    'No Face';
 
   return (
     <Box sx={{ maxWidth: { xs: '100%', sm: 600, md: 800 }, mx: 'auto' }}>
       <Typography 
         variant="h5" 
         gutterBottom 
-        sx={{ 
-          textAlign: 'center', 
-          mb: { xs: 2, sm: 3 }, 
-          fontWeight: 600,
-          fontSize: { xs: '1.25rem', sm: '1.5rem' }
-        }}
+        sx={{ textAlign: 'center', mb: { xs: 2, sm: 3 }, fontWeight: 600 }}
       >
-         Mark Attendance
+        Live Attendance Capture (DNN)
       </Typography>
 
-      {/* Connection Status */}
       <Box sx={{ display: 'flex', justifyContent: 'center', mb: 2 }}>
         <Chip
           icon={connectionStatus === 'connected' ? <CheckCircle /> : <ErrorOutline />}
-          label={
-            connectionStatus === 'connected' ? 'Backend Connected' :
-            connectionStatus === 'disconnected' ? 'Backend Disconnected' :
-            'Checking Connection...'
-          }
-          color={
-            connectionStatus === 'connected' ? 'success' :
-            connectionStatus === 'disconnected' ? 'error' :
-            'default'
-          }
+          label={connectionStatus === 'connected' ? 'Backend Connected' : 'Checking Connection...'}
+          color={connectionStatus === 'connected' ? 'success' : 'default'}
           size="small"
         />
       </Box>
 
-      <Card sx={{ p: { xs: 2, sm: 3 }, mb: { xs: 2, sm: 3 } }}>
-        <Stack spacing={{ xs: 2, sm: 3 }}>
-          {/* Controls */}
-          <Box sx={{ 
-            display: 'flex', 
-            flexDirection: { xs: 'column', sm: 'row' },
-            justifyContent: 'space-between', 
-            alignItems: { xs: 'stretch', sm: 'center' },
-            gap: { xs: 2, sm: 0 }
-          }}>
-            <FormControlLabel
-              control={
-                <Switch
-                  checked={isAutoMode}
-                  onChange={handleAutoModeToggle}
-                  color="primary"
-                />
-              }
-              label={
-                <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-                  <AutoMode fontSize="small" />
-                  <Typography fontSize={{ xs: '0.875rem', sm: '1rem' }}>
-                    Auto Recognition
-                  </Typography>
-                </Box>
-              }
+      {error && (
+        <Alert severity="error" sx={{ mb: 2 }}>
+          {error}
+        </Alert>
+      )}
+
+      <Card sx={{ p: 2, mb: 3, display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
+        <Stack spacing={2} sx={{ width: '100%', alignItems: 'center' }}>
+          <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+            <Videocam color="primary" />
+            <Typography variant="subtitle1" fontWeight="bold">
+              Client-Side Capture
+            </Typography>
+            {isProcessing && <CircularProgress size={16} sx={{ ml: 1 }} />}
+          </Box>
+          <Divider sx={{ width: '100%' }} />
+          
+          {/* ── Video container with score badge overlay ── */}
+          <Box sx={{ position: 'relative', width: '100%', maxWidth: 640, borderRadius: 2, overflow: 'hidden', border: '2px solid #e0e0e0' }}>
+            <video 
+              ref={videoRef} 
+              autoPlay 
+              playsInline 
+              muted 
+              style={{ width: '100%', display: 'block', transform: 'scaleX(-1)' }} 
             />
-            
-            <Box sx={{ 
-              display: 'flex', 
-              gap: 1, 
-              justifyContent: { xs: 'center', sm: 'flex-end' },
-              flexWrap: 'wrap'
-            }}>
-              {isAutoMode && (
-                <Chip 
-                  label="Auto Mode Active" 
-                  color="success" 
-                  size="small"
-                  icon={<CircularProgress size={12} color="inherit" />}
-                />
-              )}
-              {isLoading && (
-                <Chip 
-                  label="Processing..." 
-                  color="info" 
-                  size="small"
-                  icon={<CircularProgress size={12} color="inherit" />}
-                />
-              )}
-            </Box>
-          </Box>
+            {/* Note: The overlay coordinates may need transform scaling if video is mirrored. 
+                For MVP, we just place it directly. If mirrored video creates mismatch, 
+                we'll adjust CSS transform scaleX(-1) on canvas too. */}
+            <canvas 
+              ref={canvasOverlayRef} 
+              style={{ 
+                position: 'absolute', 
+                top: 0, 
+                left: 0, 
+                width: '100%', 
+                height: '100%', 
+                pointerEvents: 'none',
+                transform: 'scaleX(-1)' 
+              }} 
+            />
+            {/* Hidden canvas for image extraction */}
+            <canvas ref={hiddenCanvasRef} style={{ display: 'none' }} />
 
-          <Divider />
-
-          {/* Camera */}
-          <Box sx={{ display: 'flex', justifyContent: 'center' }}>
-            <Box sx={{ 
-              position: 'relative', 
-              borderRadius: 2, 
-              overflow: 'hidden',
-              maxWidth: { xs: '100%', sm: 400, md: 500 },
-              width: '100%'
-            }}>
-              <Webcam
-                ref={webcamRef}
-                screenshotFormat="image/jpeg"
-                width="100%"
-                style={{ display: 'block' }}
-                videoConstraints={{
-                  width: { ideal: 640 },
-                  height: { ideal: 480 },
-                  facingMode: "user"
+            {/* ── Real-time Confidence Score Badge (facemeet-inspired) ── */}
+            <Box
+              id="score-badge-overlay"
+              sx={{
+                '--glow-color': scoreColor,
+                position: 'absolute',
+                bottom: 16,
+                right: 16,
+                width: 110,
+                height: 110,
+                borderRadius: '50%',
+                border: `4px solid ${scoreColor}`,
+                bgcolor: 'rgba(0, 0, 0, 0.8)',
+                display: 'flex',
+                flexDirection: 'column',
+                alignItems: 'center',
+                justifyContent: 'center',
+                pointerEvents: 'none',
+                backdropFilter: 'blur(8px)',
+                animation: avgScore > 0 ? 'scorePulse 2s ease-in-out infinite' : 'none',
+                transition: 'border-color 0.4s ease',
+              } as any}
+            >
+              <Typography
+                sx={{
+                  color: scoreColor,
+                  fontWeight: 800,
+                  fontSize: '1.85rem',
+                  lineHeight: 1,
+                  fontFamily: '"Inter", "Roboto Mono", monospace',
+                  transition: 'color 0.4s ease',
                 }}
-              />
-              {isLoading && (
-                <Box
-                  sx={{
-                    position: 'absolute',
-                    top: 0,
-                    left: 0,
-                    right: 0,
-                    bottom: 0,
-                    bgcolor: 'rgba(0,0,0,0.3)',
-                    display: 'flex',
-                    alignItems: 'center',
-                    justifyContent: 'center',
-                  }}
-                >
-                  <CircularProgress color="primary" size={40} />
-                </Box>
-              )}
-            </Box>
-          </Box>
-
-          {/* Action Buttons */}
-          <Box sx={{ 
-            display: 'flex', 
-            flexDirection: { xs: 'column', sm: 'row' },
-            gap: 2, 
-            justifyContent: 'center' 
-          }}>
-            {!isAutoMode && (
-              <Button
-                variant="contained"
-                onClick={handleManualCapture}
-                disabled={isLoading}
-                startIcon={isLoading ? <CircularProgress size={20} /> : <CameraAlt />}
-                sx={{ 
-                  minWidth: { xs: '100%', sm: 160 },
-                  py: { xs: 1.5, sm: 1 }
-                }}
-                size={window.innerWidth < 600 ? 'large' : 'medium'}
               >
-                {isLoading ? 'Processing...' : 'Capture & Mark'}
-              </Button>
-            )}
-            
-            {(isCapturing || isAutoMode) && (
-              <Button
-                variant="outlined"
-                onClick={handleStopCapture}
-                startIcon={<Stop />}
-                color="error"
-                sx={{ 
-                  minWidth: { xs: '100%', sm: 120 },
-                  py: { xs: 1.5, sm: 1 }
+                {avgScore > 0 ? `${avgScore}%` : '—'}
+              </Typography>
+              <Typography
+                sx={{
+                  color: 'rgba(255,255,255,0.75)',
+                  fontSize: '0.6rem',
+                  textTransform: 'uppercase',
+                  letterSpacing: 1,
+                  mt: 0.4,
+                  fontWeight: 600,
                 }}
-                size={window.innerWidth < 600 ? 'large' : 'medium'}
               >
-                Stop
-              </Button>
+                {scoreLabel}
+              </Typography>
+            </Box>
+
+            {/* ── Recognized-name pill (visible when someone is recognized) ── */}
+            {lastRecognizedName && (
+              <Box
+                id="recognized-name-pill"
+                sx={{
+                  position: 'absolute',
+                  bottom: 16,
+                  left: 16,
+                  bgcolor: avgScore >= 80
+                    ? 'rgba(76, 175, 80, 0.9)'
+                    : avgScore >= 50
+                    ? 'rgba(255, 193, 7, 0.9)'
+                    : 'rgba(244, 67, 54, 0.9)',
+                  color: avgScore >= 50 && avgScore < 80 ? '#1a1a1a' : '#fff',
+                  px: 1.5,
+                  py: 0.75,
+                  borderRadius: 2,
+                  fontSize: '0.85rem',
+                  fontWeight: 700,
+                  backdropFilter: 'blur(4px)',
+                  boxShadow: '0 2px 12px rgba(0,0,0,0.35)',
+                  pointerEvents: 'none',
+                  transition: 'background-color 0.4s ease, opacity 0.3s ease',
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: 0.5,
+                }}
+              >
+                {avgScore >= 80 ? '✓' : avgScore >= 50 ? '⟳' : '✗'}{' '}
+                {lastRecognizedName}
+              </Box>
             )}
           </Box>
+          
         </Stack>
       </Card>
-
-      {/* Results */}
-      {error && (
-        <Alert 
-          severity="error" 
-          icon={<ErrorOutline />}
-          sx={{ mb: 2 }}
-          onClose={() => setError(null)}
-        >
-          <Typography variant="body2" sx={{ fontSize: { xs: '0.875rem', sm: '1rem' } }}>
-            {error}
-          </Typography>
-        </Alert>
-      )}
-
-      {lastResult && (
-        <Alert 
-          severity={lastResult.success ? "success" : lastResult.cooldown ? "info" : "warning"}
-          icon={lastResult.success ? <CheckCircle /> : <ErrorOutline />}
-          sx={{ mb: 2 }}
-        >
-          <Typography 
-            variant="body1" 
-            sx={{ 
-              fontWeight: 500,
-              fontSize: { xs: '0.875rem', sm: '1rem' }
-            }}
-          >
-            {lastResult.success 
-              ? `✅ Welcome, ${lastResult.name}! Attendance marked at ${new Date(lastResult.timestamp).toLocaleTimeString()}`
-              : lastResult.cooldown 
-                ? `⏱️ ${lastResult.message} ${lastResult.remaining_seconds ? `(${lastResult.remaining_seconds}s remaining)` : ''}`
-                : `❌ ${lastResult.message || 'Face not recognized'}`
-            }
-          </Typography>
-          {lastResult.confidence && (
-            <Typography 
-              variant="body2" 
-              color="text.secondary"
-              sx={{ fontSize: { xs: '0.75rem', sm: '0.875rem' } }}
-            >
-              Confidence: {(lastResult.confidence * 100).toFixed(1)}%
-            </Typography>
-          )}
-        </Alert>
-      )}
-
-      {/* Instructions */}
-      <Card sx={{ p: { xs: 1.5, sm: 2 }, bgcolor: 'grey.50' }}>
-        <Typography 
-          variant="body2" 
-          color="text.secondary" 
-          sx={{ 
-            textAlign: 'center',
-            fontSize: { xs: '0.75rem', sm: '0.875rem' },
-            lineHeight: 1.4
-          }}
-        >
-           <strong>How to use:</strong> Turn on Auto Recognition for continuous scanning, 
-          or use manual capture for one-time recognition. Make sure your face is clearly visible and well-lit.
+      
+      <Card sx={{ p: 2, bgcolor: 'grey.50' }}>
+        <Typography variant="body2" color="text.secondary" textAlign="center">
+          <strong>DNN Real-Time Processing:</strong> The camera feed is processed client-side and frames are analyzed securely by the DNN model. Look straight at the camera to mark your attendance.
         </Typography>
       </Card>
     </Box>
