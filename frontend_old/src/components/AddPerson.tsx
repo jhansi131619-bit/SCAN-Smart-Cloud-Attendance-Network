@@ -29,7 +29,7 @@ function AddPerson() {
   // Retrieve threshold from settings
   const savedSettings = localStorage.getItem('attendanceSettings');
   const settings = savedSettings ? JSON.parse(savedSettings) : {};
-  const threshold = settings.confidenceThreshold !== undefined ? settings.confidenceThreshold : 0.65;
+  const threshold = settings.confidenceThreshold !== undefined ? settings.confidenceThreshold : 0.45;
 
   // Release backend camera on unmount to prevent device locking
   useEffect(() => {

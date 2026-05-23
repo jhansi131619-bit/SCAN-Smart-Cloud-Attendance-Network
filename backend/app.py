@@ -3,7 +3,11 @@
 Flask API Backend for Face Recognition Attendance System
 """
 
-from flask import Flask, request, jsonify, send_file, Response
+import os
+os.environ['OPENBLAS_NUM_THREADS'] = '1'
+os.environ['OMP_NUM_THREADS'] = '1'
+
+from flask import Flask, request, jsonify, send_file, Response, send_from_directory
 from flask_cors import CORS
 import cv2
 import numpy as np
@@ -31,7 +35,15 @@ except ImportError:
 print("Starting Face Attendance Backend Server...")
 print("Loading dependencies...done")
 
-app = Flask(__name__)
+# Configuration
+if os.path.exists('/app/known_faces'):
+    # Running in Docker container
+    frontend_dir = '/app/frontend/dist'
+else:
+    # Running locally
+    frontend_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'frontend', 'dist'))
+
+app = Flask(__name__, static_folder=frontend_dir)
 
 # Configure CORS for production
 CORS(app, resources={r"/*": {"origins": "*"}})  # Allow all origins for debugging
@@ -177,7 +189,7 @@ def compare_faces(face1, face2):
     
     return combined_score
 
-def find_best_match(face_region, threshold=0.65):
+def find_best_match(face_region, threshold=0.45):
     """Find the best matching face from known faces with dynamic threshold"""
     if len(known_faces) == 0 or not is_trained:
         return None, 0.0
@@ -188,8 +200,8 @@ def find_best_match(face_region, threshold=0.65):
             print(f"[LBPH] Predicted label: {label}, distance: {distance}", flush=True)
             
             # Map distance to 0-1 similarity score
-            # A distance of 0 is 100% similarity. Let's use 230.0 as standard cutoff.
-            similarity = max(0.0, min(1.0, 1.0 - (distance / 230.0)))
+            # A distance of 0 is 100% similarity. Let's use 200.0 as standard cutoff.
+            similarity = max(0.0, min(1.0, 1.0 - (distance / 200.0)))
             
             if label in face_labels:
                 idx = face_labels.index(label)
@@ -427,6 +439,31 @@ def health_check():
     """Health check endpoint"""
     return jsonify({"status": "healthy", "message": "Face Recognition API is running"})
 
+@app.route('/api/login', methods=['POST'])
+def api_login():
+    """Login endpoint for SCAN frontend"""
+    try:
+        data = request.json
+        username = data.get('username', '').strip()
+        
+        if not username:
+            return jsonify({"status": "error", "message": "Username is required"}), 400
+            
+        if username.lower() == 'teacher':
+            return jsonify({
+                "status": "success",
+                "role": "teacher",
+                "name": "Teacher"
+            })
+        else:
+            return jsonify({
+                "status": "success",
+                "role": "student",
+                "name": username
+            })
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)}), 500
+
 @app.route('/api/debug', methods=['GET'])
 def debug_info():
     """Debug endpoint to check face data status"""
@@ -591,9 +628,9 @@ def add_person_backend():
         else:
             # 2. If stream is not active, open camera temporarily to grab a frame
             print("[VISION] Stream not active. Opening camera temporarily...")
-            temp_cap = cv2.VideoCapture(0, cv2.CAP_DSHOW)
+            temp_cap = cv2.VideoCapture(0)
             if not temp_cap.isOpened():
-                temp_cap = cv2.VideoCapture(1, cv2.CAP_DSHOW)
+                temp_cap = cv2.VideoCapture(1)
             
             if temp_cap.isOpened():
                 # Grab a few frames to let the auto-exposure adjust
@@ -808,8 +845,8 @@ def mark_attendance():
         # Apply Gaussian blur to reduce noise
         face_region = cv2.GaussianBlur(face_region, (3, 3), 0)
         
-        # Get threshold dynamically from request data, default to 0.65 (65%)
-        threshold = data.get('threshold', 0.65)
+        # Get threshold dynamically from request data, default to 0.45 (45%)
+        threshold = data.get('threshold', 0.45)
         
         # Find best match using our custom face recognition with dynamic threshold
         match_idx, confidence_score = find_best_match(face_region, threshold)
@@ -896,9 +933,28 @@ def get_attendance_records():
     """Get attendance records from MongoDB"""
     try:
         records = db.get_attendance_records()
-        return jsonify({"records": records, "count": len(records)})
+        return jsonify({
+            "status": "success",
+            "records": records, 
+            "data": records,
+            "count": len(records)
+        })
     except Exception as e:
-        return jsonify({"success": False, "message": f"Error getting attendance: {str(e)}"}), 500
+        return jsonify({"success": False, "status": "error", "message": f"Error getting attendance: {str(e)}"}), 500
+
+@app.route('/api/attendance/<student_name>', methods=['GET'])
+def get_student_attendance(student_name):
+    """Get attendance records for a specific student"""
+    try:
+        records = db.get_attendance_records()
+        student_records = [r for r in records if r.get('name', '').lower() == student_name.lower()]
+        return jsonify({
+            "status": "success",
+            "data": student_records,
+            "count": len(student_records)
+        })
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)}), 500
 
 @app.route('/download-attendance', methods=['GET'])
 def download_attendance():
@@ -1017,21 +1073,36 @@ def backup_data():
     except Exception as e:
         return jsonify({"success": False, "message": f"Error creating backup: {str(e)}"}), 500
 
-def generate_frames(threshold=0.65):
+def generate_frames(threshold=0.45):
     """Yields MJPEG frames with real-time OpenCV detection and face recognition overlay."""
     global last_active_frame, active_camera_capture
+    
+    # Prevent concurrent camera streams from creating hardware lock contentions and C++ level crashes
+    if active_camera_capture is not None:
+        print("[VISION] WARNING: Camera is already actively captured. Aborting second stream request to prevent contention.", flush=True)
+        return
+
     print(f"[VISION] Client connected with threshold={threshold}. Powering ON camera...", flush=True)
-    video_capture = cv2.VideoCapture(0, cv2.CAP_DSHOW)
+    
+    try:
+        video_capture = cv2.VideoCapture(0)
+    except Exception as e:
+        print(f"[VISION] ERROR: Failed to instantiate primary video capture: {e}", flush=True)
+        return
     video_capture.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
     video_capture.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
     video_capture.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*'MJPG'))
 
     if not video_capture.isOpened():
         print("[VISION] Fallback: Trying secondary camera...", flush=True)
-        video_capture = cv2.VideoCapture(1, cv2.CAP_DSHOW)
+        video_capture = cv2.VideoCapture(1)
         video_capture.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
         video_capture.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
         video_capture.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*'MJPG'))
+
+    if not video_capture.isOpened():
+        print("[VISION] ERROR: No camera devices could be opened! Terminating stream.", flush=True)
+        return
 
     active_camera_capture = video_capture
     frame_count = 0
@@ -1043,8 +1114,12 @@ def generate_frames(threshold=0.65):
                 print("[VISION] Camera released externally. Terminating stream.")
                 break
                 
+            if not video_capture.isOpened():
+                print("[VISION] ERROR: Camera was closed. Terminating stream.")
+                break
+
             success, frame = video_capture.read()
-            if not success:
+            if not success or frame is None:
                 print("[VISION] ERROR: Failed to grab frame from camera!")
                 break
 
@@ -1174,7 +1249,7 @@ def get_last_scanned():
 @app.route('/video_feed')
 def video_feed():
     """Route for the MJPEG live video stream."""
-    threshold = request.args.get('threshold', default=0.65, type=float)
+    threshold = request.args.get('threshold', default=0.45, type=float)
     return Response(generate_frames(threshold),
                     mimetype='multipart/x-mixed-replace; boundary=frame')
 
@@ -1184,7 +1259,7 @@ def api_recognize():
     try:
         data = request.json
         image_data = data.get('image')
-        threshold = data.get('threshold', 0.65)
+        threshold = data.get('threshold', 0.45)
         
         print("[VISION] Received /api/recognize request", flush=True)
         
@@ -1265,6 +1340,18 @@ def api_recognize():
         import traceback
         traceback.print_exc()
         return jsonify({"success": False, "message": f"Error recognizing: {str(e)}"}), 500
+
+@app.route('/', defaults={'path': ''})
+@app.route('/<path:path>')
+def serve(path):
+    if path != "" and os.path.exists(os.path.join(app.static_folder, path)):
+        return send_from_directory(app.static_folder, path)
+    else:
+        index_path = os.path.join(app.static_folder, 'index.html')
+        if os.path.exists(index_path):
+            with open(index_path, 'r', encoding='utf-8') as f:
+                return f.read()
+        return "Frontend not built yet", 404
 
 if __name__ == '__main__':
     print("Face Recognition API starting...")
