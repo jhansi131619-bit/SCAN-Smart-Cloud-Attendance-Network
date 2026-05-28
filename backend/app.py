@@ -41,7 +41,9 @@ if os.path.exists('/app/known_faces'):
     frontend_dir = '/app/frontend/dist'
 else:
     # Running locally
-    frontend_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'frontend', 'dist'))
+    local_build = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'frontend', 'build'))
+    local_dist = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'frontend', 'dist'))
+    frontend_dir = local_build if os.path.exists(local_build) else local_dist
 
 app = Flask(__name__, static_folder=frontend_dir)
 
