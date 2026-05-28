@@ -202,8 +202,8 @@ def find_best_match(face_region, threshold=0.45):
             print(f"[LBPH] Predicted label: {label}, distance: {distance}", flush=True)
             
             # Map distance to 0-1 similarity score
-            # A distance of 0 is 100% similarity. Let's use 200.0 as standard cutoff.
-            similarity = max(0.0, min(1.0, 1.0 - (distance / 200.0)))
+            # A distance of 0 is 100% similarity. Let's use 190.0 as standard cutoff for high accuracy.
+            similarity = max(0.0, min(1.0, 1.0 - (distance / 190.0)))
             
             if label in face_labels:
                 idx = face_labels.index(label)
@@ -878,7 +878,8 @@ def mark_attendance():
             current_time = get_indian_time()
             last_time = last_attendance.get(recognized_name)
             
-            if last_time and (current_time - last_time).total_seconds() < 60:
+            allow_multiple = os.getenv("ALLOW_MULTIPLE_ATTENDANCE", "true").lower() == "true"
+            if not allow_multiple and last_time and (current_time - last_time).total_seconds() < 60:
                 remaining_seconds = 60 - int((current_time - last_time).total_seconds())
                 return jsonify({
                     "success": False,
@@ -1315,8 +1316,11 @@ def api_recognize():
                             face_region = cv2.GaussianBlur(face_region, (3, 3), 0)
                             
                             # Recognize
+                            # Initialize attendance status variables
                             name = "Unknown"
                             rec_conf = 0
+                            success = False
+                            db_msg = "Unknown person"
                             
                             if is_trained and len(known_faces) > 0:
                                 match_idx, conf_score = find_best_match(face_region, threshold)
@@ -1335,12 +1339,16 @@ def api_recognize():
                                     print(f"[VISION] DB mark_attendance result: {success} - {db_msg}", flush=True)
                                     if success:
                                         last_attendance[name] = get_indian_time()
+                                else:
+                                    db_msg = "Face not recognized above confidence threshold"
                             
                             faces_detected.append({
                                 "name": name,
                                 "confidence": rec_conf,
                                 "box": {"x": int(startX), "y": int(startY), "w": int(endX - startX), "h": int(endY - startY)},
-                                "liveness": "passed"  # Hardcoded MVP as requested
+                                "liveness": "passed",  # Hardcoded MVP as requested
+                                "attendance_marked": success,
+                                "attendance_message": db_msg
                             })
         else:
             return jsonify({"success": False, "message": "DNN model not loaded on server."}), 500

@@ -352,7 +352,7 @@ function Settings() {
                   <Slider
                     value={settings.confidenceThreshold * 100}
                     onChange={(_, value) => handleSettingChange('confidenceThreshold', (value as number) / 100)}
-                    min={50}
+                    min={30}
                     max={95}
                     step={5}
                     marks

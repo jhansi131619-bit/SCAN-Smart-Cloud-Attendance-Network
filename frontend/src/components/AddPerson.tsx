@@ -24,7 +24,6 @@ import {
   CameraAlt, 
   Face, 
   Close, 
-  Replay, 
   Star 
 } from '@mui/icons-material';
 import axios from 'axios';
@@ -44,7 +43,7 @@ function AddPerson() {
   const [isLoading, setIsLoading] = useState(false);
   const [message, setMessage] = useState('');
   const [isSuccess, setIsSuccess] = useState(false);
-  const [captureMode, setCaptureMode] = useState<'browser' | 'backend'>('backend');
+  const [captureMode, setCaptureMode] = useState<'browser' | 'backend'>('browser');
   const [backendStreamError, setBackendStreamError] = useState<string | null>(null);
 
   // High-accuracy multi-angle states
@@ -66,8 +65,15 @@ function AddPerson() {
 
   const playAudio = useCallback((audioFile: string) => {
     try {
+      const savedSettings = localStorage.getItem('attendanceSettings');
+      const settings = savedSettings ? JSON.parse(savedSettings) : {};
+      const soundEnabled = settings.soundEnabled !== undefined ? settings.soundEnabled : true;
+      const soundVolume = settings.soundVolume !== undefined ? settings.soundVolume : 80;
+      
+      if (!soundEnabled) return;
+
       const audio = new Audio(`${API_BASE_URL}/audio/${audioFile}`);
-      audio.volume = 0.8;
+      audio.volume = soundVolume / 100;
       audio.play().catch(err => {
         console.warn('Audio playback failed:', err);
         // Fallback to text-to-speech if audio fails
@@ -350,7 +356,7 @@ function AddPerson() {
           {/* Guided Step Indicator for High Accuracy Mode */}
           {isRegistering && regMode === 'multi' && (
             <Box sx={{ width: '100%', my: 1 }}>
-              <Stepper activeStep={currentStep} alternativeLabel size="small">
+              <Stepper activeStep={currentStep} alternativeLabel>
                 {ANGLES.map((angle) => (
                   <Step key={angle.id}>
                     <StepLabel>
@@ -387,117 +393,115 @@ function AddPerson() {
           <Divider />
 
           {/* Camera Viewport */}
-          {(regMode === 'single' || isRegistering) && (
-            <Box>
-              {captureMode === 'browser' ? (
-                <Box sx={{ position: 'relative' }}>
-                  <Typography 
-                    variant="subtitle1" 
-                    gutterBottom 
-                    sx={{ 
-                      fontWeight: 500,
-                      fontSize: { xs: '0.9rem', sm: '1rem' },
-                      textAlign: 'center',
-                      mb: 1.5
+          <Box>
+            {captureMode === 'browser' ? (
+              <Box sx={{ position: 'relative' }}>
+                <Typography 
+                  variant="subtitle1" 
+                  gutterBottom 
+                  sx={{ 
+                    fontWeight: 500,
+                    fontSize: { xs: '0.9rem', sm: '1rem' },
+                    textAlign: 'center',
+                    mb: 1.5
+                  }}
+                >
+                  Camera Viewport (Browser)
+                </Typography>
+                <Box sx={{ 
+                  borderRadius: 3, 
+                  overflow: 'hidden',
+                  border: '2px solid #e0e0e0',
+                  maxWidth: { xs: '100%', sm: 400 },
+                  mx: 'auto',
+                  position: 'relative',
+                  boxShadow: 2
+                }}>
+                  <Webcam
+                    ref={webcamRef}
+                    screenshotFormat="image/jpeg"
+                    width="100%"
+                    style={{ display: 'block' }}
+                    videoConstraints={{
+                      width: { ideal: 640 },
+                      height: { ideal: 480 },
+                      facingMode: "user"
                     }}
-                  >
-                    Camera Viewport (Browser)
-                  </Typography>
-                  <Box sx={{ 
-                    borderRadius: 3, 
-                    overflow: 'hidden',
-                    border: '2px solid #e0e0e0',
-                    maxWidth: { xs: '100%', sm: 400 },
-                    mx: 'auto',
-                    position: 'relative',
-                    boxShadow: 2
-                  }}>
-                    <Webcam
-                      ref={webcamRef}
-                      screenshotFormat="image/jpeg"
-                      width="100%"
-                      style={{ display: 'block' }}
-                      videoConstraints={{
-                        width: { ideal: 640 },
-                        height: { ideal: 480 },
-                        facingMode: "user"
-                      }}
-                      onUserMediaError={() => {
-                        setMessage("Browser webcam failed to load. The camera is likely locked by the backend stream. Please select 'SCAN Live Feed' above!");
-                        setIsSuccess(false);
-                      }}
-                    />
-                  </Box>
+                    onUserMediaError={() => {
+                      setMessage("Browser webcam failed to load. The camera is likely locked by the backend stream. Please select 'SCAN Live Feed' above!");
+                      setIsSuccess(false);
+                    }}
+                  />
                 </Box>
-              ) : (
-                <Box sx={{ position: 'relative' }}>
-                  <Typography 
-                    variant="subtitle1" 
-                    gutterBottom 
-                    sx={{ 
-                      fontWeight: 500,
-                      fontSize: { xs: '0.9rem', sm: '1rem' },
-                      textAlign: 'center',
-                      mb: 1.5
+              </Box>
+            ) : (
+              <Box sx={{ position: 'relative' }}>
+                <Typography 
+                  variant="subtitle1" 
+                  gutterBottom 
+                  sx={{ 
+                    fontWeight: 500,
+                    fontSize: { xs: '0.9rem', sm: '1rem' },
+                    textAlign: 'center',
+                    mb: 1.5
+                  }}
+                >
+                  Camera Viewport (SCAN Live Feed)
+                </Typography>
+                <Box sx={{ 
+                  borderRadius: 3, 
+                  overflow: 'hidden',
+                  border: '2px solid #e0e0e0',
+                  maxWidth: { xs: '100%', sm: 400 },
+                  mx: 'auto',
+                  position: 'relative',
+                  aspectRatio: '4/3',
+                  bgcolor: 'black',
+                  boxShadow: 2
+                }}>
+                  <img
+                    src={`${API_BASE_URL}/video_feed?threshold=${threshold}&t=${Date.now()}`}
+                    alt="SCAN Live Feed"
+                    style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block' }}
+                    onError={() => {
+                      setBackendStreamError("Failed to connect to SCAN video stream. Verify that your backend is running.");
                     }}
-                  >
-                    Camera Viewport (SCAN Live Feed)
-                  </Typography>
+                  />
                   <Box sx={{ 
-                    borderRadius: 3, 
-                    overflow: 'hidden',
-                    border: '2px solid #e0e0e0',
-                    maxWidth: { xs: '100%', sm: 400 },
-                    mx: 'auto',
-                    position: 'relative',
-                    aspectRatio: '4/3',
-                    bgcolor: 'black',
-                    boxShadow: 2
+                    position: 'absolute', 
+                    top: 10, 
+                    right: 10, 
+                    bgcolor: 'error.main', 
+                    color: 'white', 
+                    px: 1, 
+                    py: 0.5, 
+                    borderRadius: 1,
+                    fontSize: '0.75rem',
+                    fontWeight: 'bold',
+                    zIndex: 10
                   }}>
-                    <img
-                      src={`${API_BASE_URL}/video_feed?threshold=${threshold}&t=${Date.now()}`}
-                      alt="SCAN Live Feed"
-                      style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block' }}
-                      onError={() => {
-                        setBackendStreamError("Failed to connect to SCAN video stream. Verify that your backend is running.");
-                      }}
-                    />
+                    LIVE
+                  </Box>
+                  {backendStreamError && (
                     <Box sx={{ 
                       position: 'absolute', 
-                      top: 10, 
-                      right: 10, 
-                      bgcolor: 'error.main', 
-                      color: 'white', 
-                      px: 1, 
-                      py: 0.5, 
-                      borderRadius: 1,
-                      fontSize: '0.75rem',
-                      fontWeight: 'bold',
-                      zIndex: 10
+                      inset: 0, 
+                      bgcolor: 'rgba(0,0,0,0.85)', 
+                      display: 'flex', 
+                      alignItems: 'center', 
+                      justifyContent: 'center', 
+                      color: 'white',
+                      p: 2,
+                      textAlign: 'center',
+                      zIndex: 9
                     }}>
-                      LIVE
+                      <Typography variant="body2">{backendStreamError}</Typography>
                     </Box>
-                    {backendStreamError && (
-                      <Box sx={{ 
-                        position: 'absolute', 
-                        inset: 0, 
-                        bgcolor: 'rgba(0,0,0,0.85)', 
-                        display: 'flex', 
-                        alignItems: 'center', 
-                        justifyContent: 'center', 
-                        color: 'white',
-                        p: 2,
-                        textAlign: 'center',
-                        zIndex: 9
-                      }}>
-                        <Typography variant="body2">{backendStreamError}</Typography>
-                      </Box>
-                    )}
-                  </Box>
+                  )}
                 </Box>
-              )}
-            </Box>
-          )}
+              </Box>
+            )}
+          </Box>
 
           {/* Action Buttons */}
           <Stack spacing={1.5}>

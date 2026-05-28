@@ -18,6 +18,8 @@ interface FaceResult {
   confidence: number;
   box: { x: number; y: number; w: number; h: number };
   liveness: string;
+  attendance_marked?: boolean;
+  attendance_message?: string;
 }
 
 /**
@@ -32,11 +34,15 @@ function getScoreColor(score: number): string {
   return '#f44336';                     // red – low / unknown
 }
 
-/** Pulsing glow keyframes injected once via <style> tag */
+/** Pulsing glow and slide-in keyframes injected once via <style> tag */
 const GLOW_KEYFRAMES = `
 @keyframes scorePulse {
   0%, 100% { box-shadow: 0 0 12px var(--glow-color); }
   50%      { box-shadow: 0 0 28px var(--glow-color), 0 0 48px var(--glow-color); }
+}
+@keyframes slideIn {
+  from { transform: translate(-50%, -20px); opacity: 0; }
+  to   { transform: translate(-50%, 0); opacity: 1; }
 }
 `;
 
@@ -64,13 +70,40 @@ function AttendanceCapture() {
   const [avgScore, setAvgScore] = useState<number>(0);
   const [lastRecognizedName, setLastRecognizedName] = useState<string | null>(null);
 
+  // Audio and visual notification states
+  const lastAudioRef = useRef<{ [name: string]: number }>({});
+  const [successBanner, setSuccessBanner] = useState<{ name: string; score: number; type: 'marked' | 'already_marked' } | null>(null);
+  const [flashBorder, setFlashBorder] = useState<'green' | 'blue' | 'red' | null>(null);
+
   // Retrieve threshold from settings
   const savedSettings = localStorage.getItem('attendanceSettings');
   const settings = savedSettings ? JSON.parse(savedSettings) : {};
   const threshold = settings.confidenceThreshold !== undefined ? settings.confidenceThreshold : 0.45;
 
+  const playAudio = useCallback((audioFile: string) => {
+    try {
+      const savedSettings = localStorage.getItem('attendanceSettings');
+      const settings = savedSettings ? JSON.parse(savedSettings) : {};
+      const soundEnabled = settings.soundEnabled !== undefined ? settings.soundEnabled : true;
+      const soundVolume = settings.soundVolume !== undefined ? settings.soundVolume : 80;
+      
+      if (!soundEnabled) return;
+
+      const audio = new Audio(`${API_BASE_URL}/audio/${audioFile}`);
+      audio.volume = soundVolume / 100;
+      audio.play().catch(err => {
+        console.warn('Audio playback failed:', err);
+      });
+    } catch (err) {
+      console.warn('Audio creation failed:', err);
+    }
+  }, []);
+
   // Check backend connection
   useEffect(() => {
+    // Release any backend camera lock on mount to prevent hardware conflicts
+    axios.post(`${API_BASE_URL}/api/camera-control/stop`).catch(() => {});
+
     const checkConnection = async () => {
       try {
         const response = await axios.get(`${API_BASE_URL}/api/health`, { timeout: 5000 });
@@ -159,6 +192,67 @@ function AttendanceCapture() {
           } else {
             setLastRecognizedName(null);
           }
+
+          // ── AUDIO & VISUAL SIGNALS TRIGGER ──
+          let flashType: 'green' | 'blue' | 'red' | null = null;
+          const now = Date.now();
+
+          faces.forEach(face => {
+            if (face.name !== 'Unknown') {
+              const lastPlayed = lastAudioRef.current[face.name] || 0;
+
+              if (face.attendance_marked) {
+                // Attendance marked successfully just now!
+                playAudio('attendance_marked.wav');
+                lastAudioRef.current[face.name] = now;
+
+                setSuccessBanner({ name: face.name, score: face.confidence, type: 'marked' });
+                flashType = 'green';
+
+                // Clear banner after 4 seconds
+                setTimeout(() => {
+                  setSuccessBanner(prev => prev && prev.name === face.name && prev.type === 'marked' ? null : prev);
+                }, 4000);
+              } else if (face.attendance_message && face.attendance_message.toLowerCase().includes('already marked')) {
+                // Attendance is already marked!
+                // Play audio only if we haven't played it for this person in the last 15 seconds to prevent audio spam
+                if (now - lastPlayed > 15000) {
+                  playAudio('attendance_is_already_marked.wav');
+                  lastAudioRef.current[face.name] = now;
+                }
+
+                setSuccessBanner(prev => {
+                  if (!prev || prev.type === 'already_marked') {
+                    return { name: face.name, score: face.confidence, type: 'already_marked' };
+                  }
+                  return prev;
+                });
+
+                if (!flashType) flashType = 'blue';
+
+                // Clear banner after 3 seconds
+                setTimeout(() => {
+                  setSuccessBanner(prev => prev && prev.name === face.name && prev.type === 'already_marked' ? null : prev);
+                }, 3000);
+              }
+            } else {
+              // Face detected but unrecognized (Unknown)
+              if (!flashType) flashType = 'red';
+
+              // Play person_not_detected voice alert with a cooldown of 10s to prevent spamming
+              const lastUnknownPlayed = lastAudioRef.current['__unknown__'] || 0;
+              if (now - lastUnknownPlayed > 10000) {
+                playAudio('person_not_detected.wav');
+                lastAudioRef.current['__unknown__'] = now;
+              }
+            }
+          });
+
+          if (flashType) {
+            setFlashBorder(flashType);
+            setTimeout(() => setFlashBorder(prev => prev === flashType ? null : prev), 1200);
+          }
+
         } else {
           // Decay score smoothly toward 0 when no faces present
           setAvgScore(prev => parseFloat((prev * 0.7).toFixed(1)));
@@ -176,8 +270,9 @@ function AttendanceCapture() {
             
             // Determine color based on liveness
             let strokeColor = '#f44336'; // Red
-            if (face.liveness === 'passed') strokeColor = '#4caf50'; // Green
-            else if (face.liveness === 'verifying') strokeColor = '#ff9800'; // Orange
+            if (face.attendance_marked) strokeColor = '#4caf50'; // Green
+            else if (face.attendance_message && face.attendance_message.toLowerCase().includes('already marked')) strokeColor = '#2196f3'; // Blue
+            else if (face.liveness === 'passed') strokeColor = '#4caf50'; // Green fallback
             
             // Draw Box
             overlayCtx.strokeStyle = strokeColor;
@@ -206,8 +301,8 @@ function AttendanceCapture() {
       }
     };
 
-    // Run interval every 1 second
-    intervalRef.current = setInterval(captureAndSend, 1000);
+    // Run interval every 1.2 seconds to allow audio to trigger properly without overlap
+    intervalRef.current = setInterval(captureAndSend, 1200);
 
     return () => {
       // Cleanup interval and tracks
@@ -216,7 +311,7 @@ function AttendanceCapture() {
         streamRef.current.getTracks().forEach(track => track.stop());
       }
     };
-  }, [threshold]);
+  }, [threshold, playAudio]);
 
   // Derived values for the score badge
   const scoreColor = getScoreColor(avgScore);
@@ -262,8 +357,29 @@ function AttendanceCapture() {
           </Box>
           <Divider sx={{ width: '100%' }} />
           
-          {/* ── Video container with score badge overlay ── */}
-          <Box sx={{ position: 'relative', width: '100%', maxWidth: 640, borderRadius: 2, overflow: 'hidden', border: '2px solid #e0e0e0' }}>
+          {/* ── Video container with score badge overlay and glow flash border ── */}
+          <Box sx={{ 
+            position: 'relative', 
+            width: '100%', 
+            maxWidth: 640, 
+            borderRadius: 2, 
+            overflow: 'hidden', 
+            border: flashBorder === 'green'
+              ? '4px solid #4caf50'
+              : flashBorder === 'blue'
+              ? '4px solid #2196f3'
+              : flashBorder === 'red'
+              ? '4px solid #f44336'
+              : '4px solid #e0e0e0',
+            boxShadow: flashBorder === 'green'
+              ? '0 0 24px rgba(76, 175, 80, 0.8)'
+              : flashBorder === 'blue'
+              ? '0 0 24px rgba(33, 150, 243, 0.8)'
+              : flashBorder === 'red'
+              ? '0 0 24px rgba(244, 67, 54, 0.8)'
+              : 'none',
+            transition: 'border 0.2s ease, box-shadow 0.2s ease'
+          }}>
             <video 
               ref={videoRef} 
               autoPlay 
@@ -271,9 +387,7 @@ function AttendanceCapture() {
               muted 
               style={{ width: '100%', display: 'block', transform: 'scaleX(-1)' }} 
             />
-            {/* Note: The overlay coordinates may need transform scaling if video is mirrored. 
-                For MVP, we just place it directly. If mirrored video creates mismatch, 
-                we'll adjust CSS transform scaleX(-1) on canvas too. */}
+            
             <canvas 
               ref={canvasOverlayRef} 
               style={{ 
@@ -288,6 +402,42 @@ function AttendanceCapture() {
             />
             {/* Hidden canvas for image extraction */}
             <canvas ref={hiddenCanvasRef} style={{ display: 'none' }} />
+
+            {/* ── Visual Floating Success Banner Overlay ── */}
+            {successBanner && (
+              <Box sx={{
+                position: 'absolute',
+                top: 16,
+                left: '50%',
+                transform: 'translateX(-50%)',
+                zIndex: 100,
+                width: '90%',
+                maxWidth: 450,
+                pointerEvents: 'none',
+                animation: 'slideIn 0.3s ease-out'
+              }}>
+                <Alert 
+                  severity={successBanner.type === 'marked' ? 'success' : 'info'} 
+                  icon={successBanner.type === 'marked' ? <CheckCircle /> : undefined}
+                  sx={{
+                    boxShadow: 4,
+                    borderRadius: 2,
+                    fontSize: '0.95rem',
+                    fontWeight: 750,
+                    backdropFilter: 'blur(6px)',
+                    bgcolor: successBanner.type === 'marked' ? 'rgba(76, 175, 80, 0.95)' : 'rgba(33, 150, 243, 0.95)',
+                    color: 'white',
+                    '& .MuiAlert-icon': {
+                      color: 'white'
+                    }
+                  }}
+                >
+                  {successBanner.type === 'marked' 
+                    ? `Success! Attendance marked for ${successBanner.name}`
+                    : `Attendance already marked for ${successBanner.name}`}
+                </Alert>
+              </Box>
+            )}
 
             {/* ── Real-time Confidence Score Badge (facemeet-inspired) ── */}
             <Box
@@ -377,7 +527,7 @@ function AttendanceCapture() {
       
       <Card sx={{ p: 2, bgcolor: 'grey.50' }}>
         <Typography variant="body2" color="text.secondary" textAlign="center">
-          <strong>DNN Real-Time Processing:</strong> The camera feed is processed client-side and frames are analyzed securely by the DNN model. Look straight at the camera to mark your attendance.
+          <strong>Interactive Kiosk Feedback:</strong> When a face is successfully matched, the terminal will instantly flash green and announce your attendance marking with a voice confirmation.
         </Typography>
       </Card>
     </Box>

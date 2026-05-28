@@ -63,11 +63,13 @@ class Database:
 
         if self.attendance_collection is not None:
             try:
-                # Strictly enforce one attendance record per person per day (session)
-                existing = self.attendance_collection.find_one({"name": name, "date": today_str})
-                if existing:
-                    print(f"[DB] Attendance already marked for {name} today")
-                    return False, "Attendance already marked for today"
+                # Strictly enforce one attendance record per person per day (session) unless multiple attendance is allowed for testing
+                allow_multiple = os.getenv("ALLOW_MULTIPLE_ATTENDANCE", "true").lower() == "true"
+                if not allow_multiple:
+                    existing = self.attendance_collection.find_one({"name": name, "date": today_str})
+                    if existing:
+                        print(f"[DB] Attendance already marked for {name} today")
+                        return False, "Attendance already marked for today"
             except Exception as e:
                 print(f"[DB] Error checking duplicate: {e}")
 
@@ -94,13 +96,15 @@ class Database:
                 conn = sqlite3.connect(self.sqlite_db_path)
                 cursor = conn.cursor()
                 
-                # Strictly enforce one attendance record per person per day (session)
-                cursor.execute("SELECT id FROM daily_logs WHERE name = ? AND date = ?", (name, today_str))
-                existing = cursor.fetchone()
-                if existing:
-                    conn.close()
-                    print(f"[DB SQLite] Attendance already marked for {name} today")
-                    return False, "Attendance already marked for today"
+                # Strictly enforce one attendance record per person per day (session) unless multiple attendance is allowed for testing
+                allow_multiple = os.getenv("ALLOW_MULTIPLE_ATTENDANCE", "true").lower() == "true"
+                if not allow_multiple:
+                    cursor.execute("SELECT id FROM daily_logs WHERE name = ? AND date = ?", (name, today_str))
+                    existing = cursor.fetchone()
+                    if existing:
+                        conn.close()
+                        print(f"[DB SQLite] Attendance already marked for {name} today")
+                        return False, "Attendance already marked for today"
                 
                 # Insert
                 cursor.execute(
