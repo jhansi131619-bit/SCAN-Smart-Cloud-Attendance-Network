@@ -11,11 +11,32 @@ import {
   CircularProgress,
   ToggleButton,
   ToggleButtonGroup,
-  Divider
+  Divider,
+  Stepper,
+  Step,
+  StepLabel,
+  Paper
 } from '@mui/material';
-import { PersonAdd, CheckCircle, Videocam, CameraAlt } from '@mui/icons-material';
+import { 
+  PersonAdd, 
+  CheckCircle, 
+  Videocam, 
+  CameraAlt, 
+  Face, 
+  Close, 
+  Replay, 
+  Star 
+} from '@mui/icons-material';
 import axios from 'axios';
 import { API_BASE_URL } from '../config';
+
+const ANGLES = [
+  { id: 'front', label: 'Front', instruction: 'Look straight at the camera with a neutral expression' },
+  { id: 'left', label: 'Left Profile', instruction: 'Turn your face slightly to the left' },
+  { id: 'right', label: 'Right Profile', instruction: 'Turn your face slightly to the right' },
+  { id: 'up', label: 'Looking Up', instruction: 'Tilt your head slightly upward' },
+  { id: 'down', label: 'Looking Down', instruction: 'Tilt your head slightly downward' }
+];
 
 function AddPerson() {
   const webcamRef = useRef<Webcam>(null);
@@ -25,6 +46,11 @@ function AddPerson() {
   const [isSuccess, setIsSuccess] = useState(false);
   const [captureMode, setCaptureMode] = useState<'browser' | 'backend'>('backend');
   const [backendStreamError, setBackendStreamError] = useState<string | null>(null);
+
+  // High-accuracy multi-angle states
+  const [regMode, setRegMode] = useState<'single' | 'multi'>('multi');
+  const [currentStep, setCurrentStep] = useState(0);
+  const [isRegistering, setIsRegistering] = useState(false);
 
   // Retrieve threshold from settings
   const savedSettings = localStorage.getItem('attendanceSettings');
@@ -69,13 +95,7 @@ function AddPerson() {
     }
   }, []);
 
-  const handleAddPerson = async () => {
-    if (!name.trim()) {
-      setMessage('Please enter a name');
-      setIsSuccess(false);
-      return;
-    }
-
+  const handleSingleCapture = async () => {
     setIsLoading(true);
     setMessage('');
     setBackendStreamError(null);
@@ -92,7 +112,8 @@ function AddPerson() {
       try {
         await axios.post(`${API_BASE_URL}/add-person`, {
           name: name.trim(),
-          image: imageSrc
+          image: imageSrc,
+          angle: ''
         });
 
         setMessage(`Successfully added ${name} to the system!`);
@@ -110,7 +131,8 @@ function AddPerson() {
       // Backend capture mode
       try {
         await axios.post(`${API_BASE_URL}/add-person-backend`, {
-          name: name.trim()
+          name: name.trim(),
+          angle: ''
         });
 
         setMessage(`Successfully added ${name} to the system using SCAN camera!`);
@@ -127,8 +149,114 @@ function AddPerson() {
     }
   };
 
+  const handleStepCapture = async () => {
+    setIsLoading(true);
+    setMessage('');
+    setBackendStreamError(null);
+    const angleObj = ANGLES[currentStep];
+
+    if (captureMode === 'browser') {
+      const imageSrc = webcamRef.current?.getScreenshot();
+      if (!imageSrc) {
+        setMessage('Please make sure camera is working, or switch to SCAN Live Feed');
+        setIsSuccess(false);
+        setIsLoading(false);
+        return;
+      }
+
+      try {
+        await axios.post(`${API_BASE_URL}/add-person`, {
+          name: name.trim(),
+          image: imageSrc,
+          angle: angleObj.id
+        });
+
+        // Step captured successfully!
+        if (currentStep < ANGLES.length - 1) {
+          setCurrentStep(prev => prev + 1);
+          setMessage(`Successfully captured ${angleObj.label}! Proceed to the next angle.`);
+          setIsSuccess(true);
+        } else {
+          // All steps captured! Now retrain the model.
+          setMessage('All angles successfully captured! Retraining face recognition system for maximum accuracy...');
+          setIsSuccess(true);
+          try {
+            await axios.post(`${API_BASE_URL}/api/retrain-model`);
+            setMessage(`Congratulations! Successfully registered ${name} in High-Accuracy mode (5 angles)!`);
+            setName('');
+            setCurrentStep(0);
+            setIsRegistering(false);
+            playAudio('person_added_successfully.wav');
+          } catch (retrainErr) {
+            console.error('Retraining failed:', retrainErr);
+            setMessage(`Registered all angles for ${name}, but model auto-retraining failed. You can retrain manually in settings.`);
+          }
+        }
+      } catch (error: any) {
+        setMessage(error.response?.data?.message || `Failed to detect face for ${angleObj.label}. Please adjust your posture and try capturing again.`);
+        setIsSuccess(false);
+        playAudio('person_not_detected.wav');
+      } finally {
+        setIsLoading(false);
+      }
+    } else {
+      // Backend capture mode
+      try {
+        await axios.post(`${API_BASE_URL}/add-person-backend`, {
+          name: name.trim(),
+          angle: angleObj.id
+        });
+
+        // Step captured successfully!
+        if (currentStep < ANGLES.length - 1) {
+          setCurrentStep(prev => prev + 1);
+          setMessage(`Successfully captured ${angleObj.label}! Proceed to the next angle.`);
+          setIsSuccess(true);
+        } else {
+          // All steps captured! Now retrain the model.
+          setMessage('All angles successfully captured! Retraining face recognition system for maximum accuracy...');
+          setIsSuccess(true);
+          try {
+            await axios.post(`${API_BASE_URL}/api/retrain-model`);
+            setMessage(`Congratulations! Successfully registered ${name} in High-Accuracy mode (5 angles)!`);
+            setName('');
+            setCurrentStep(0);
+            setIsRegistering(false);
+            playAudio('person_added_successfully.wav');
+          } catch (retrainErr) {
+            console.error('Retraining failed:', retrainErr);
+            setMessage(`Registered all angles for ${name}, but model auto-retraining failed. You can retrain manually in settings.`);
+          }
+        }
+      } catch (error: any) {
+        setMessage(error.response?.data?.message || `Failed to capture ${angleObj.label} using SCAN camera feed. Make sure your face is visible and looking in the correct direction.`);
+        setIsSuccess(false);
+        playAudio('person_not_detected.wav');
+      } finally {
+        setIsLoading(false);
+      }
+    }
+  };
+
+  const handleStartMultiRegistration = () => {
+    if (!name.trim()) {
+      setMessage('Please enter a name first');
+      setIsSuccess(false);
+      return;
+    }
+    setIsRegistering(true);
+    setCurrentStep(0);
+    setMessage('');
+  };
+
+  const handleCancelRegistration = () => {
+    setIsRegistering(false);
+    setCurrentStep(0);
+    setMessage('');
+  };
+
   return (
-    <Box sx={{ maxWidth: { xs: '100%', sm: 500, md: 600 }, mx: 'auto' }}>
+    <Box sx={{ maxWidth: { xs: '100%', sm: 550, md: 650 }, mx: 'auto' }}>
       <Typography 
         variant="h5" 
         gutterBottom 
@@ -149,166 +277,280 @@ function AddPerson() {
             label="Full Name"
             value={name}
             onChange={(e) => setName(e.target.value)}
+            disabled={isRegistering}
             fullWidth
             placeholder="Enter person's name"
             variant="outlined"
           />
 
-          {/* Photo Source Selector */}
-          <Box sx={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 1 }}>
-            <Typography variant="subtitle2" color="text.secondary">
-              Camera Source Selector
-            </Typography>
-            <ToggleButtonGroup
-              value={captureMode}
-              exclusive
-              onChange={(e, value) => {
-                if (value !== null) {
-                  setCaptureMode(value);
-                  setMessage('');
-                  if (value === 'browser') {
-                    axios.post(`${API_BASE_URL}/api/camera-control/stop`).catch(() => {});
-                  }
-                }
-              }}
-              aria-label="camera source"
-              size="small"
-              color="primary"
-            >
-              <ToggleButton value="browser" sx={{ px: 2, py: 1, display: 'flex', gap: 1 }}>
-                <Videocam fontSize="small" />
-                Browser Webcam
-              </ToggleButton>
-              <ToggleButton value="backend" sx={{ px: 2, py: 1, display: 'flex', gap: 1 }}>
-                <CameraAlt fontSize="small" />
-                SCAN Live Feed
-              </ToggleButton>
-            </ToggleButtonGroup>
-          </Box>
+          {/* Registration Mode and Camera Source Selection */}
+          {!isRegistering && (
+            <Stack direction={{ xs: 'column', sm: 'row' }} spacing={2} justifyContent="space-between">
+              {/* Registration Scheme Selection */}
+              <Box sx={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 1, flex: 1 }}>
+                <Typography variant="subtitle2" color="text.secondary">
+                  Accuracy Scheme
+                </Typography>
+                <ToggleButtonGroup
+                  value={regMode}
+                  exclusive
+                  onChange={(e, value) => {
+                    if (value !== null) {
+                      setRegMode(value);
+                      setMessage('');
+                    }
+                  }}
+                  size="small"
+                  color="primary"
+                >
+                  <ToggleButton value="multi" sx={{ px: 1.5, py: 0.75, display: 'flex', gap: 0.5, fontSize: '0.8rem' }}>
+                    <Star fontSize="small" sx={{ color: 'warning.main' }} />
+                    5-Angle Scan (High Acc)
+                  </ToggleButton>
+                  <ToggleButton value="single" sx={{ px: 1.5, py: 0.75, display: 'flex', gap: 0.5, fontSize: '0.8rem' }}>
+                    <Face fontSize="small" />
+                    Quick Scan (1 Photo)
+                  </ToggleButton>
+                </ToggleButtonGroup>
+              </Box>
+
+              {/* Camera Source Selector */}
+              <Box sx={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 1, flex: 1 }}>
+                <Typography variant="subtitle2" color="text.secondary">
+                  Camera Source
+                </Typography>
+                <ToggleButtonGroup
+                  value={captureMode}
+                  exclusive
+                  onChange={(e, value) => {
+                    if (value !== null) {
+                      setCaptureMode(value);
+                      setMessage('');
+                      if (value === 'browser') {
+                        axios.post(`${API_BASE_URL}/api/camera-control/stop`).catch(() => {});
+                      }
+                    }
+                  }}
+                  size="small"
+                  color="primary"
+                >
+                  <ToggleButton value="browser" sx={{ px: 1.5, py: 0.75, display: 'flex', gap: 0.5, fontSize: '0.8rem' }}>
+                    <Videocam fontSize="small" />
+                    Browser Webcam
+                  </ToggleButton>
+                  <ToggleButton value="backend" sx={{ px: 1.5, py: 0.75, display: 'flex', gap: 0.5, fontSize: '0.8rem' }}>
+                    <CameraAlt fontSize="small" />
+                    SCAN Live Feed
+                  </ToggleButton>
+                </ToggleButtonGroup>
+              </Box>
+            </Stack>
+          )}
+
+          {/* Guided Step Indicator for High Accuracy Mode */}
+          {isRegistering && regMode === 'multi' && (
+            <Box sx={{ width: '100%', my: 1 }}>
+              <Stepper activeStep={currentStep} alternativeLabel size="small">
+                {ANGLES.map((angle) => (
+                  <Step key={angle.id}>
+                    <StepLabel>
+                      <Typography sx={{ fontSize: '0.75rem', fontWeight: 600 }}>
+                        {angle.label}
+                      </Typography>
+                    </StepLabel>
+                  </Step>
+                ))}
+              </Stepper>
+
+              {/* Pose Instruction Panel */}
+              <Paper 
+                variant="outlined" 
+                sx={{ 
+                  p: 1.5, 
+                  mt: 2, 
+                  bgcolor: 'primary.50', 
+                  borderColor: 'primary.200', 
+                  borderRadius: 2,
+                  textAlign: 'center'
+                }}
+              >
+                <Typography variant="subtitle2" color="primary.800" sx={{ fontWeight: 'bold' }}>
+                  Step {currentStep + 1} of 5: {ANGLES[currentStep].label} Capture
+                </Typography>
+                <Typography variant="body2" color="text.secondary" sx={{ mt: 0.5 }}>
+                  👉 {ANGLES[currentStep].instruction}
+                </Typography>
+              </Paper>
+            </Box>
+          )}
 
           <Divider />
 
           {/* Camera Viewport */}
-          <Box>
-            {captureMode === 'browser' ? (
-              <Box>
-                <Typography 
-                  variant="subtitle1" 
-                  gutterBottom 
-                  sx={{ 
-                    fontWeight: 500,
-                    fontSize: { xs: '0.9rem', sm: '1rem' },
-                    textAlign: 'center',
-                    mb: 1.5
-                  }}
-                >
-                   Take Photo (Browser Camera)
-                </Typography>
-                <Box sx={{ 
-                  borderRadius: 2, 
-                  overflow: 'hidden',
-                  border: '2px solid #e0e0e0',
-                  maxWidth: { xs: '100%', sm: 400 },
-                  mx: 'auto',
-                  position: 'relative'
-                }}>
-                  <Webcam
-                    ref={webcamRef}
-                    screenshotFormat="image/jpeg"
-                    width="100%"
-                    style={{ display: 'block' }}
-                    videoConstraints={{
-                      width: { ideal: 640 },
-                      height: { ideal: 480 },
-                      facingMode: "user"
+          {(regMode === 'single' || isRegistering) && (
+            <Box>
+              {captureMode === 'browser' ? (
+                <Box sx={{ position: 'relative' }}>
+                  <Typography 
+                    variant="subtitle1" 
+                    gutterBottom 
+                    sx={{ 
+                      fontWeight: 500,
+                      fontSize: { xs: '0.9rem', sm: '1rem' },
+                      textAlign: 'center',
+                      mb: 1.5
                     }}
-                    onUserMediaError={() => {
-                      setMessage("Browser webcam failed to load. The camera is likely locked by the backend stream. Please select 'SCAN Live Feed' above!");
-                      setIsSuccess(false);
-                    }}
-                  />
-                </Box>
-              </Box>
-            ) : (
-              <Box>
-                <Typography 
-                  variant="subtitle1" 
-                  gutterBottom 
-                  sx={{ 
-                    fontWeight: 500,
-                    fontSize: { xs: '0.9rem', sm: '1rem' },
-                    textAlign: 'center',
-                    mb: 1.5
-                  }}
-                >
-                   SCAN Live Camera Feed (Processed)
-                </Typography>
-                <Box sx={{ 
-                  borderRadius: 2, 
-                  overflow: 'hidden',
-                  border: '2px solid #e0e0e0',
-                  maxWidth: { xs: '100%', sm: 400 },
-                  mx: 'auto',
-                  position: 'relative',
-                  aspectRatio: '4/3',
-                  bgcolor: 'black'
-                }}>
-                  <img
-                    src={`${API_BASE_URL}/video_feed?threshold=${threshold}&t=${Date.now()}`}
-                    alt="SCAN Live Feed"
-                    style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block' }}
-                    onError={() => {
-                      setBackendStreamError("Failed to connect to SCAN video stream. Verify that your backend is running.");
-                    }}
-                  />
+                  >
+                    Camera Viewport (Browser)
+                  </Typography>
                   <Box sx={{ 
-                    position: 'absolute', 
-                    top: 10, 
-                    right: 10, 
-                    bgcolor: 'error.main', 
-                    color: 'white', 
-                    px: 1, 
-                    py: 0.5, 
-                    borderRadius: 1,
-                    fontSize: '0.75rem',
-                    fontWeight: 'bold',
-                    zIndex: 10
+                    borderRadius: 3, 
+                    overflow: 'hidden',
+                    border: '2px solid #e0e0e0',
+                    maxWidth: { xs: '100%', sm: 400 },
+                    mx: 'auto',
+                    position: 'relative',
+                    boxShadow: 2
                   }}>
-                    LIVE
+                    <Webcam
+                      ref={webcamRef}
+                      screenshotFormat="image/jpeg"
+                      width="100%"
+                      style={{ display: 'block' }}
+                      videoConstraints={{
+                        width: { ideal: 640 },
+                        height: { ideal: 480 },
+                        facingMode: "user"
+                      }}
+                      onUserMediaError={() => {
+                        setMessage("Browser webcam failed to load. The camera is likely locked by the backend stream. Please select 'SCAN Live Feed' above!");
+                        setIsSuccess(false);
+                      }}
+                    />
                   </Box>
-                  {backendStreamError && (
+                </Box>
+              ) : (
+                <Box sx={{ position: 'relative' }}>
+                  <Typography 
+                    variant="subtitle1" 
+                    gutterBottom 
+                    sx={{ 
+                      fontWeight: 500,
+                      fontSize: { xs: '0.9rem', sm: '1rem' },
+                      textAlign: 'center',
+                      mb: 1.5
+                    }}
+                  >
+                    Camera Viewport (SCAN Live Feed)
+                  </Typography>
+                  <Box sx={{ 
+                    borderRadius: 3, 
+                    overflow: 'hidden',
+                    border: '2px solid #e0e0e0',
+                    maxWidth: { xs: '100%', sm: 400 },
+                    mx: 'auto',
+                    position: 'relative',
+                    aspectRatio: '4/3',
+                    bgcolor: 'black',
+                    boxShadow: 2
+                  }}>
+                    <img
+                      src={`${API_BASE_URL}/video_feed?threshold=${threshold}&t=${Date.now()}`}
+                      alt="SCAN Live Feed"
+                      style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block' }}
+                      onError={() => {
+                        setBackendStreamError("Failed to connect to SCAN video stream. Verify that your backend is running.");
+                      }}
+                    />
                     <Box sx={{ 
                       position: 'absolute', 
-                      inset: 0, 
-                      bgcolor: 'rgba(0,0,0,0.85)', 
-                      display: 'flex', 
-                      alignItems: 'center', 
-                      justifyContent: 'center', 
-                      color: 'white',
-                      p: 2,
-                      textAlign: 'center',
-                      zIndex: 9
+                      top: 10, 
+                      right: 10, 
+                      bgcolor: 'error.main', 
+                      color: 'white', 
+                      px: 1, 
+                      py: 0.5, 
+                      borderRadius: 1,
+                      fontSize: '0.75rem',
+                      fontWeight: 'bold',
+                      zIndex: 10
                     }}>
-                      <Typography variant="body2">{backendStreamError}</Typography>
+                      LIVE
                     </Box>
-                  )}
+                    {backendStreamError && (
+                      <Box sx={{ 
+                        position: 'absolute', 
+                        inset: 0, 
+                        bgcolor: 'rgba(0,0,0,0.85)', 
+                        display: 'flex', 
+                        alignItems: 'center', 
+                        justifyContent: 'center', 
+                        color: 'white',
+                        p: 2,
+                        textAlign: 'center',
+                        zIndex: 9
+                      }}>
+                        <Typography variant="body2">{backendStreamError}</Typography>
+                      </Box>
+                    )}
+                  </Box>
                 </Box>
-              </Box>
-            )}
-          </Box>
+              )}
+            </Box>
+          )}
 
-          {/* Add Button */}
-          <Button
-            variant="contained"
-            onClick={handleAddPerson}
-            disabled={isLoading || !name.trim()}
-            startIcon={isLoading ? <CircularProgress size={20} /> : <PersonAdd />}
-            size="large"
-            fullWidth
-            sx={{ py: 1.5 }}
-          >
-            {isLoading ? 'Adding Person...' : 'Add Person'}
-          </Button>
+          {/* Action Buttons */}
+          <Stack spacing={1.5}>
+            {regMode === 'multi' && !isRegistering ? (
+              <Button
+                variant="contained"
+                onClick={handleStartMultiRegistration}
+                disabled={!name.trim()}
+                startIcon={<Star sx={{ color: 'warning.main' }} />}
+                size="large"
+                fullWidth
+                sx={{ py: 1.5, fontWeight: 'bold' }}
+              >
+                Start Multi-Angle Registration
+              </Button>
+            ) : regMode === 'multi' && isRegistering ? (
+              <Stack direction="row" spacing={2}>
+                <Button
+                  variant="outlined"
+                  onClick={handleCancelRegistration}
+                  startIcon={<Close />}
+                  color="error"
+                  fullWidth
+                  sx={{ py: 1.5 }}
+                >
+                  Cancel
+                </Button>
+                <Button
+                  variant="contained"
+                  onClick={handleStepCapture}
+                  disabled={isLoading}
+                  startIcon={isLoading ? <CircularProgress size={20} /> : <CameraAlt />}
+                  fullWidth
+                  sx={{ py: 1.5, fontWeight: 'bold' }}
+                >
+                  {isLoading ? 'Processing...' : `Capture ${ANGLES[currentStep].label}`}
+                </Button>
+              </Stack>
+            ) : (
+              // Single Photo Registration Mode
+              <Button
+                variant="contained"
+                onClick={handleSingleCapture}
+                disabled={isLoading || !name.trim()}
+                startIcon={isLoading ? <CircularProgress size={20} /> : <PersonAdd />}
+                size="large"
+                fullWidth
+                sx={{ py: 1.5 }}
+              >
+                {isLoading ? 'Adding Person...' : 'Add Person (Quick Scan)'}
+              </Button>
+            )}
+          </Stack>
         </Stack>
       </Card>
 
@@ -337,9 +579,8 @@ function AddPerson() {
             lineHeight: 1.4
           }}
         >
-           <strong>Tips:</strong> Make sure your face is clearly visible. If you select 
-           <strong> SCAN Live Feed</strong>, the photo is captured directly from the camera 
-           running in the backend. Look straight at the physical camera lens!
+           <strong>High Accuracy Tip:</strong> In 5-Angle Scan, the system registers five views of your face.
+           This dramatically increases recognition reliability when students approach the camera at slightly different angles or tilts during attendance marking.
         </Typography>
       </Card>
     </Box>

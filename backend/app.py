@@ -291,6 +291,11 @@ def load_known_faces():
                     
                     known_faces.append(face_region)
                     name = filename.split('.')[0]
+                    # Strip any angle suffixes (e.g. _front, _left, _right, _up, _down) for training mapping
+                    for suffix in ['_front', '_left', '_right', '_up', '_down', '_smile', '_tilt']:
+                        if name.endswith(suffix):
+                            name = name[:-len(suffix)]
+                            break
                     known_names.append(name)
                     face_labels.append(label_counter)
                     
@@ -326,7 +331,13 @@ def load_known_faces():
                         
                         known_faces.append(face_region)
                         name = filename.split('.')[0]
+                        # Strip any angle suffixes (e.g. _front, _left, _right, _up, _down) for training mapping
+                        for suffix in ['_front', '_left', '_right', '_up', '_down', '_smile', '_tilt']:
+                            if name.endswith(suffix):
+                                name = name[:-len(suffix)]
+                                break
                         known_names.append(name)
+                        parent_label = label_counter
                         face_labels.append(label_counter)
                         
                         print(f"Loaded face for: {name} (Label: {label_counter}) with relaxed detection")
@@ -524,8 +535,9 @@ def add_person():
         data = request.json
         name = data.get('name', '').strip()
         image_data = data.get('image')
+        angle = data.get('angle', '').strip()
         
-        print(f"Add person request received - Name: {name}")
+        print(f"Add person request received - Name: {name}, Angle: {angle}")
         print(f"Known faces directory: {KNOWN_FACES_DIR}")
         print(f"Directory exists: {os.path.exists(KNOWN_FACES_DIR)}")
         
@@ -567,7 +579,7 @@ def add_person():
             return jsonify({"success": False, "message": "No face detected in the image. Please make sure your face is clearly visible."}), 400
         
         # Upload image to ImageKit instead of saving locally
-        filename = f"{name}.jpg"
+        filename = f"{name}_{angle}.jpg" if angle else f"{name}.jpg"
         imagekit_url = upload_image_to_imagekit(image, filename)
         
         if not imagekit_url or imagekit_url == "local_storage_fallback":
@@ -616,8 +628,9 @@ def add_person_backend():
     try:
         data = request.json
         name = data.get('name', '').strip()
+        angle = data.get('angle', '').strip()
         
-        print(f"Add person backend request received - Name: {name}")
+        print(f"Add person backend request received - Name: {name}, Angle: {angle}")
         
         if not name:
             return jsonify({"success": False, "message": "Name is required"}), 400
@@ -671,7 +684,7 @@ def add_person_backend():
             return jsonify({"success": False, "message": "No face detected in backend camera view. Please make sure you are in front of the camera and looking directly at it."}), 400
         
         # Upload image to ImageKit instead of saving locally (optional, fallback to local)
-        filename = f"{name}.jpg"
+        filename = f"{name}_{angle}.jpg" if angle else f"{name}.jpg"
         imagekit_url = upload_image_to_imagekit(image, filename)
         
         if not imagekit_url or imagekit_url == "local_storage_fallback":
