@@ -72,7 +72,11 @@ interface AttendanceStats {
   mostActivePerson: string;
 }
 
-function AttendanceView() {
+interface AttendanceViewProps {
+  studentName?: string;
+}
+
+function AttendanceView({ studentName }: AttendanceViewProps = {}) {
   const [records, setRecords] = useState<AttendanceRecord[]>([]);
   const [filteredRecords, setFilteredRecords] = useState<AttendanceRecord[]>([]);
   const [knownPeople, setKnownPeople] = useState<string[]>([]);
@@ -159,6 +163,11 @@ function AttendanceView() {
 
   const applyFiltersAndSort = () => {
     let filtered = records.filter(record => {
+      // Student-specific scope filter
+      if (studentName && record.name.toLowerCase() !== studentName.toLowerCase()) {
+        return false;
+      }
+
       // Search filter
       if (filters.search && !record.name.toLowerCase().includes(filters.search.toLowerCase())) {
         return false;
@@ -400,7 +409,8 @@ function AttendanceView() {
       )}
 
       {/* Filters */}
-      <Card sx={{ p: 3, mb: 3 }}>
+      {!studentName && (
+        <Card sx={{ p: 3, mb: 3 }}>
         <Typography variant="h6" gutterBottom sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
           <FilterList />
           Filters & Search
@@ -476,11 +486,12 @@ function AttendanceView() {
           />
         </Box>
       </Card>
+      )}
 
       {/* Summary Cards */}
       <Box sx={{ 
         display: 'grid', 
-        gridTemplateColumns: { xs: 'repeat(2, 1fr)', sm: 'repeat(4, 1fr)' },
+        gridTemplateColumns: { xs: 'repeat(2, 1fr)', sm: studentName ? 'repeat(3, 1fr)' : 'repeat(4, 1fr)' },
         gap: 2,
         mb: 3 
       }}>
@@ -492,14 +503,16 @@ function AttendanceView() {
             Total Records
           </Typography>
         </Card>
-        <Card sx={{ p: 2, textAlign: 'center', bgcolor: 'success.50' }}>
-          <Typography variant="h4" color="success.main" sx={{ fontWeight: 600 }}>
-            {generateStats.uniquePeople}
-          </Typography>
-          <Typography variant="body2" color="text.secondary">
-            Unique People
-          </Typography>
-        </Card>
+        {!studentName && (
+          <Card sx={{ p: 2, textAlign: 'center', bgcolor: 'success.50' }}>
+            <Typography variant="h4" color="success.main" sx={{ fontWeight: 600 }}>
+              {generateStats.uniquePeople}
+            </Typography>
+            <Typography variant="body2" color="text.secondary">
+              Unique People
+            </Typography>
+          </Card>
+        )}
         <Card sx={{ p: 2, textAlign: 'center', bgcolor: 'warning.50' }}>
           <Typography variant="h4" color="warning.main" sx={{ fontWeight: 600 }}>
             {generateStats.todayRecords}

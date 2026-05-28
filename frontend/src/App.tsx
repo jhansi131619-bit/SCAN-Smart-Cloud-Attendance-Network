@@ -23,7 +23,12 @@ import {
   DialogContent,
   DialogActions,
   Button,
-  LinearProgress
+  LinearProgress,
+  Chip,
+  Avatar,
+  CircularProgress,
+  TextField,
+  Stack
 } from '@mui/material';
 import { 
   CameraAlt, 
@@ -46,6 +51,7 @@ import KnownFaces from './components/KnownFaces';
 import AttendanceView from './components/AttendanceView';
 import Reports from './components/Reports';
 import Settings from './components/Settings';
+import Dashboard from './components/Dashboard';
 import axios from 'axios';
 import { API_BASE_URL } from './config';
 
@@ -131,6 +137,16 @@ function TabPanel(props: TabPanelProps) {
 }
 
 function App() {
+  // User session state (Teacher vs Student)
+  const [user, setUser] = useState<{ name: string; role: 'teacher' | 'student' } | null>(() => {
+    const saved = localStorage.getItem('scanUserSession');
+    return saved ? JSON.parse(saved) : null;
+  });
+
+  const [usernameInput, setUsernameInput] = useState('');
+  const [loginError, setLoginError] = useState<string | null>(null);
+  const [loginLoading, setLoginLoading] = useState(false);
+
   const [tabValue, setTabValue] = useState(0);
   const [anchorEl, setAnchorEl] = useState<null | HTMLElement>(null);
   const [notifications, setNotifications] = useState(3); // Mock notification count
@@ -186,6 +202,45 @@ function App() {
     setLastActivity(`${new Date().toLocaleTimeString()}: ${message}`);
   };
 
+  const handleLogin = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!usernameInput.trim()) {
+      setLoginError('Username is required');
+      return;
+    }
+    try {
+      setLoginLoading(true);
+      setLoginError(null);
+      const response = await axios.post(`${API_BASE_URL}/api/login`, {
+        username: usernameInput.trim()
+      });
+      if (response.data.status === 'success') {
+        const session = {
+          name: response.data.name,
+          role: response.data.role
+        };
+        localStorage.setItem('scanUserSession', JSON.stringify(session));
+        setUser(session as any);
+        setTabValue(0); // Go to Dashboard on login
+        setUsernameInput('');
+      } else {
+        setLoginError(response.data.message || 'Login failed');
+      }
+    } catch (err: any) {
+      setLoginError(err.response?.data?.message || 'Connection to authentication server failed');
+    } finally {
+      setLoginLoading(false);
+    }
+  };
+
+  const handleLogout = () => {
+    localStorage.removeItem('scanUserSession');
+    setUser(null);
+    setTabValue(0);
+    // Release any backend camera
+    axios.post(`${API_BASE_URL}/api/camera-control/stop`).catch(() => {});
+  };
+
   const handleTabChange = (event: React.SyntheticEvent, newValue: number) => {
     setTabValue(newValue);
     setIsLoading(true);
@@ -222,14 +277,134 @@ function App() {
     handleMenuClose();
   };
 
-  const tabLabels = [
-    { icon: <CameraAlt />, label: 'Mark Attendance', shortLabel: 'Attendance' },
-    { icon: <PersonAdd />, label: 'Add Person', shortLabel: 'Add' },
-    { icon: <People />, label: 'Manage People', shortLabel: 'Manage' },
-    { icon: <List />, label: 'View Records', shortLabel: 'Records' },
-    { icon: <Assessment />, label: 'Reports', shortLabel: 'Reports' },
-    { icon: <SettingsIcon />, label: 'Settings', shortLabel: 'Settings' }
-  ];
+  const tabLabels = user?.role === 'teacher' 
+    ? [
+        { icon: <Assessment />, label: 'Teacher Dashboard', shortLabel: 'Dashboard' },
+        { icon: <CameraAlt />, label: 'Mark Attendance', shortLabel: 'Attendance' },
+        { icon: <PersonAdd />, label: 'Add Student', shortLabel: 'Add' },
+        { icon: <People />, label: 'Manage People', shortLabel: 'Manage' },
+        { icon: <List />, label: 'View Records', shortLabel: 'Records' },
+        { icon: <Assessment />, label: 'Reports', shortLabel: 'Reports' },
+        { icon: <SettingsIcon />, label: 'Settings', shortLabel: 'Settings' }
+      ]
+    : [
+        { icon: <Assessment />, label: 'Student Dashboard', shortLabel: 'Dashboard' },
+        { icon: <List />, label: 'My Records', shortLabel: 'Records' },
+        { icon: <CameraAlt />, label: 'Self Attendance Mark', shortLabel: 'Attendance' }
+      ];
+
+  if (!user) {
+    return (
+      <ThemeProvider theme={theme}>
+        <CssBaseline />
+        <Box
+          sx={{
+            minHeight: '100vh',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            background: 'radial-gradient(circle at 20% 30%, #1e1b4b 0%, #0f172a 100%)',
+            p: 3
+          }}
+        >
+          <Paper
+            elevation={24}
+            sx={{
+              p: { xs: 4, sm: 5 },
+              width: '100%',
+              maxWidth: 460,
+              borderRadius: 4,
+              backdropFilter: 'blur(16px)',
+              bgcolor: 'rgba(15, 23, 42, 0.75)',
+              border: '1px solid rgba(255, 255, 255, 0.08)',
+              color: 'white',
+              textAlign: 'center',
+              boxShadow: '0 24px 64px rgba(0,0,0,0.5)'
+            }}
+          >
+            <Box
+              sx={{
+                width: 64,
+                height: 64,
+                borderRadius: '50%',
+                bgcolor: 'primary.main',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                mx: 'auto',
+                mb: 3,
+                boxShadow: '0 0 24px rgba(59, 130, 246, 0.5)'
+              }}
+            >
+              <CameraAlt sx={{ color: 'white', fontSize: 32 }} />
+            </Box>
+            
+            <Typography variant="h4" fontWeight="800" gutterBottom sx={{ letterSpacing: '-0.5px' }}>
+              SCAN
+            </Typography>
+            <Typography variant="body1" sx={{ color: 'rgba(255,255,255,0.7)', mb: 4 }}>
+              Smart Cloud Attendance Network Login
+            </Typography>
+
+            {loginError && (
+              <Alert severity="error" sx={{ mb: 3, borderRadius: 2 }}>
+                {loginError}
+              </Alert>
+            )}
+
+            <form onSubmit={handleLogin}>
+              <Stack spacing={3}>
+                <TextField
+                  fullWidth
+                  label="Username / ID"
+                  variant="outlined"
+                  value={usernameInput}
+                  onChange={(e) => setUsernameInput(e.target.value)}
+                  disabled={loginLoading}
+                  placeholder="Enter 'teacher' or student name"
+                  InputLabelProps={{ style: { color: 'rgba(255, 255, 255, 0.7)' } }}
+                  sx={{
+                    '& .MuiOutlinedInput-root': {
+                      color: 'white',
+                      bgcolor: 'rgba(255,255,255,0.05)',
+                      borderRadius: 2,
+                      '& fieldset': { borderColor: 'rgba(255, 255, 255, 0.15)' },
+                      '&:hover fieldset': { borderColor: 'rgba(255, 255, 255, 0.3)' },
+                      '&.Mui-focused fieldset': { borderColor: 'primary.main' }
+                    }
+                  }}
+                />
+
+                <Button
+                  type="submit"
+                  variant="contained"
+                  fullWidth
+                  size="large"
+                  disabled={loginLoading}
+                  sx={{
+                    py: 1.5,
+                    fontWeight: 'bold',
+                    fontSize: '1rem',
+                    bgcolor: 'primary.main',
+                    boxShadow: '0 8px 24px rgba(59, 130, 246, 0.3)',
+                    '&:hover': {
+                      bgcolor: 'primary.dark'
+                    }
+                  }}
+                >
+                  {loginLoading ? <CircularProgress size={24} color="inherit" /> : 'Access Command Center'}
+                </Button>
+              </Stack>
+            </form>
+
+            <Typography variant="caption" sx={{ display: 'block', mt: 4, color: 'rgba(255,255,255,0.4)' }}>
+              SCAN Platform v3.0.0 • Secured via Local Authentication
+            </Typography>
+          </Paper>
+        </Box>
+      </ThemeProvider>
+    );
+  }
 
   return (
     <ThemeProvider theme={theme}>
@@ -275,7 +450,21 @@ function App() {
               </Typography>
             </Box>
             
-            <Box sx={{ display: 'flex', alignItems: 'center', gap: { xs: 0.5, sm: 1 } }}>
+            <Box sx={{ display: 'flex', alignItems: 'center', gap: { xs: 0.5, sm: 1.5 } }}>
+              {user && (
+                <Chip
+                  avatar={
+                    <Avatar sx={{ bgcolor: 'primary.main', color: 'white !important', fontSize: '0.75rem' }}>
+                      {user.name.charAt(0).toUpperCase()}
+                    </Avatar>
+                  }
+                  label={user.role === 'teacher' ? 'Teacher (Admin)' : user.name}
+                  variant="outlined"
+                  size="small"
+                  sx={{ display: { xs: 'none', md: 'inline-flex' } }}
+                />
+              )}
+
               <Tooltip title="Notifications">
                 <IconButton 
                   color="inherit" 
@@ -313,6 +502,16 @@ function App() {
                   <MoreVert />
                 </IconButton>
               </Tooltip>
+
+              <Button
+                variant="outlined"
+                color="primary"
+                size="small"
+                onClick={handleLogout}
+                sx={{ ml: 1, fontSize: '0.8rem', py: 0.5, px: 1.5 }}
+              >
+                Logout
+              </Button>
               
               <Menu
                 anchorEl={anchorEl}
@@ -381,24 +580,43 @@ function App() {
 
             {isLoading && <LinearProgress sx={{ width: '100%', position: 'absolute', bottom: 0 }} />}
 
-            <TabPanel value={tabValue} index={0}>
-              <AttendanceCapture />
-            </TabPanel>
-            <TabPanel value={tabValue} index={1}>
-              <AddPerson />
-            </TabPanel>
-            <TabPanel value={tabValue} index={2}>
-              <KnownFaces />
-            </TabPanel>
-            <TabPanel value={tabValue} index={3}>
-              <AttendanceView />
-            </TabPanel>
-            <TabPanel value={tabValue} index={4}>
-              <Reports />
-            </TabPanel>
-            <TabPanel value={tabValue} index={5}>
-              <Settings />
-            </TabPanel>
+            {user?.role === 'teacher' ? (
+              <>
+                <TabPanel value={tabValue} index={0}>
+                  <Dashboard role="teacher" user={user} setTabValue={setTabValue} />
+                </TabPanel>
+                <TabPanel value={tabValue} index={1}>
+                  <AttendanceCapture />
+                </TabPanel>
+                <TabPanel value={tabValue} index={2}>
+                  <AddPerson />
+                </TabPanel>
+                <TabPanel value={tabValue} index={3}>
+                  <KnownFaces />
+                </TabPanel>
+                <TabPanel value={tabValue} index={4}>
+                  <AttendanceView />
+                </TabPanel>
+                <TabPanel value={tabValue} index={5}>
+                  <Reports />
+                </TabPanel>
+                <TabPanel value={tabValue} index={6}>
+                  <Settings />
+                </TabPanel>
+              </>
+            ) : (
+              <>
+                <TabPanel value={tabValue} index={0}>
+                  <Dashboard role="student" user={user} setTabValue={setTabValue} />
+                </TabPanel>
+                <TabPanel value={tabValue} index={1}>
+                  <AttendanceView studentName={user?.name} />
+                </TabPanel>
+                <TabPanel value={tabValue} index={2}>
+                  <AttendanceCapture />
+                </TabPanel>
+              </>
+            )}
           </Paper>
         </Container>
 
