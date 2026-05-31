@@ -53,6 +53,7 @@ interface SystemSettings {
   soundEnabled: boolean;
   soundVolume: number;
   confidenceThreshold: number;
+  livenessThreshold: number;
   attendanceCooldown: number;
   autoRefresh: boolean;
   refreshInterval: number;
@@ -77,6 +78,7 @@ function Settings() {
     soundEnabled: true,
     soundVolume: 80,
     confidenceThreshold: 0.45,
+    livenessThreshold: 60,
     attendanceCooldown: 60,
     autoRefresh: true,
     refreshInterval: 30,
@@ -156,6 +158,9 @@ function Settings() {
       setSaveStatus('saving');
       localStorage.setItem('attendanceSettings', JSON.stringify(settings));
       
+      // Dispatch custom theme changed event
+      window.dispatchEvent(new Event('scanThemeChanged'));
+      
       // Apply settings to the system (simulate API call)
       await new Promise(resolve => setTimeout(resolve, 1000));
       
@@ -175,6 +180,7 @@ function Settings() {
       soundEnabled: true,
       soundVolume: 80,
       confidenceThreshold: 0.45,
+      livenessThreshold: 60,
       attendanceCooldown: 60,
       autoRefresh: true,
       refreshInterval: 30,
@@ -185,6 +191,9 @@ function Settings() {
       debugMode: false
     };
     setSettings(defaultSettings);
+    
+    // Dispatch custom theme changed event
+    window.dispatchEvent(new Event('scanThemeChanged'));
     showNotificationMessage('Settings reset to defaults', 'info');
   };
 
@@ -361,6 +370,24 @@ function Settings() {
                   />
                   <Typography variant="body2" color="text.secondary">
                     Minimum confidence required for recognition
+                  </Typography>
+                </Box>
+
+                <Box>
+                  <Typography gutterBottom>
+                    Liveness Verification Sensitivity: {settings.livenessThreshold || 60}
+                  </Typography>
+                  <Slider
+                    value={settings.livenessThreshold || 60}
+                    onChange={(_, value) => handleSettingChange('livenessThreshold', value as number)}
+                    min={10}
+                    max={200}
+                    step={10}
+                    marks
+                    valueLabelDisplay="auto"
+                  />
+                  <Typography variant="body2" color="text.secondary">
+                    Laplacian texture complexity cutoff (higher is stricter, default is 60)
                   </Typography>
                 </Box>
 
@@ -597,6 +624,11 @@ function Settings() {
             />
             <Chip
               label={`Cooldown: ${settings.attendanceCooldown}s`}
+              color="primary"
+              size="small"
+            />
+            <Chip
+              label={`Liveness Sensitivity: ${settings.livenessThreshold || 60}`}
               color="primary"
               size="small"
             />

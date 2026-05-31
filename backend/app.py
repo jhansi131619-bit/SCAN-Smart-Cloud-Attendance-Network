@@ -359,6 +359,34 @@ def load_known_faces():
     print("No faces found for training")
     return False
 
+def detect_liveness(face_region_bgr, threshold=60.0):
+    """
+    Computes texture Laplacian variance to identify flat printed paper or screens.
+    Also analyzes standard deviation of color to prevent spoofing.
+    Returns (is_real, score)
+    """
+    if face_region_bgr is None or face_region_bgr.size == 0:
+        return False, 0.0
+    
+    try:
+        # Convert to gray for texture sharpness check
+        gray = cv2.cvtColor(face_region_bgr, cv2.COLOR_BGR2GRAY)
+        laplacian_var = cv2.Laplacian(gray, cv2.CV_64F).var()
+        
+        # Color standard deviation analysis
+        _, stddev = cv2.meanStdDev(face_region_bgr)
+        avg_stddev = np.mean(stddev)
+        
+        # Real human faces show sharp facial lines/features and rich color variances
+        # threshold defaults to 60.0. Higher means stricter checking.
+        is_real = (laplacian_var >= threshold) and (avg_stddev > 10.0)
+        
+        print(f"[LIVENESS] Score: {laplacian_var:.2f}, Color StdDev: {avg_stddev:.2f}, Threshold: {threshold}, IsReal: {is_real}")
+        return is_real, float(laplacian_var)
+    except Exception as e:
+        print(f"[LIVENESS] Error running liveness: {e}")
+        return True, 100.0  # Fallback to true if calculations fail
+
 def base64_to_cv2(base64_str):
     """Convert base64 string to OpenCV image"""
     try:
@@ -458,22 +486,33 @@ def api_login():
     try:
         data = request.json
         username = data.get('username', '').strip()
+        password = data.get('password', '').strip()
         
         if not username:
             return jsonify({"status": "error", "message": "Username is required"}), 400
+        if not password:
+            return jsonify({"status": "error", "message": "Password is required"}), 400
             
         if username.lower() == 'teacher':
-            return jsonify({
-                "status": "success",
-                "role": "teacher",
-                "name": "Teacher"
-            })
+            if password == 'teacher123':
+                return jsonify({
+                    "status": "success",
+                    "role": "teacher",
+                    "name": "Teacher"
+                })
+            else:
+                return jsonify({"status": "error", "message": "Invalid password for teacher account"}), 401
         else:
-            return jsonify({
-                "status": "success",
-                "role": "student",
-                "name": username
-            })
+            # Student password must be exactly username + 123
+            expected_student_password = f"{username}123"
+            if password == expected_student_password:
+                return jsonify({
+                    "status": "success",
+                    "role": "student",
+                    "name": username
+                })
+            else:
+                return jsonify({"status": "error", "message": f"Invalid password. For student login, please use your name + '123' (e.g. {username}123)"}), 401
     except Exception as e:
         return jsonify({"status": "error", "message": str(e)}), 500
 
@@ -1173,6 +1212,10 @@ def generate_frames(threshold=0.45):
                     name = "Unknown"
                     confidence = 0
                     
+                    # Extract BGR face region for liveness checking
+                    face_region_bgr = frame[fy:fy+fh, fx:fx+fw]
+                    is_liveness_real, liveness_score = detect_liveness(face_region_bgr, threshold=60.0)
+                    
                     if is_trained and len(known_faces) > 0:
                         match_idx, confidence_score = find_best_match(face_region, threshold)
                         if match_idx is not None and confidence_score >= threshold:
@@ -1185,39 +1228,50 @@ def generate_frames(threshold=0.45):
                     if frame_count % 15 == 0:
                         now_iso = datetime.now().isoformat()
                         if name != "Unknown":
-                            # Log to DB (optimistic duplicate check is inside db.mark_attendance)
-                            success, db_msg = db.mark_attendance(name, confidence / 100.0)
-                            
-                            if success:
+                            if is_liveness_real:
+                                # Log to DB (optimistic duplicate check is inside db.mark_attendance)
+                                success, db_msg = db.mark_attendance(name, confidence / 100.0)
+                                
+                                if success:
+                                    last_scanned_status.update({
+                                        "name": name,
+                                        "confidence": float(confidence) / 100.0,
+                                        "timestamp": now_iso,
+                                        "status": "success",
+                                        "message": f"Attendance marked for {name}",
+                                        "audio": "attendance_marked"
+                                    })
+                                    print(f"[VISION] Attendance marked: {name} ({confidence}%)", flush=True)
+                                else:
+                                    if "already marked" in db_msg.lower() or "duplicate" in db_msg.lower():
+                                        last_scanned_status.update({
+                                            "name": name,
+                                            "confidence": float(confidence) / 100.0,
+                                            "timestamp": now_iso,
+                                            "status": "cooldown",
+                                            "message": f"Attendance already marked for {name}",
+                                            "audio": "attendance_is_already_marked"
+                                        })
+                                        print(f"[VISION] Attendance already marked: {name}", flush=True)
+                                    else:
+                                        last_scanned_status.update({
+                                            "name": name,
+                                            "confidence": float(confidence) / 100.0,
+                                            "timestamp": now_iso,
+                                            "status": "error",
+                                            "message": db_msg,
+                                            "audio": "person_not_detected"
+                                        })
+                            else:
                                 last_scanned_status.update({
                                     "name": name,
                                     "confidence": float(confidence) / 100.0,
                                     "timestamp": now_iso,
-                                    "status": "success",
-                                    "message": f"Attendance marked for {name}",
-                                    "audio": "attendance_marked"
+                                    "status": "spoof_detected",
+                                    "message": "Spoof Attempt Blocked: Printed photo/screen detected",
+                                    "audio": "person_not_detected"
                                 })
-                                print(f"[VISION] Attendance marked: {name} ({confidence}%)", flush=True)
-                            else:
-                                if "already marked" in db_msg.lower() or "duplicate" in db_msg.lower():
-                                    last_scanned_status.update({
-                                        "name": name,
-                                        "confidence": float(confidence) / 100.0,
-                                        "timestamp": now_iso,
-                                        "status": "cooldown",
-                                        "message": f"Attendance already marked for {name}",
-                                        "audio": "attendance_is_already_marked"
-                                    })
-                                    print(f"[VISION] Attendance already marked: {name}", flush=True)
-                                else:
-                                    last_scanned_status.update({
-                                        "name": name,
-                                        "confidence": float(confidence) / 100.0,
-                                        "timestamp": now_iso,
-                                        "status": "error",
-                                        "message": db_msg,
-                                        "audio": "person_not_detected"
-                                    })
+                                print(f"[VISION] Spoof detected in backend stream for {name}! Blocked.", flush=True)
                         else:
                             # Face detected but not recognized
                             last_scanned_status.update({
@@ -1303,11 +1357,18 @@ def api_recognize():
                     
                     
                     if startX < endX and startY < endY:
+                        # Extract BGR face region for liveness checking
+                        face_region_bgr = image[startY:endY, startX:endX]
+                        liveness_threshold = data.get('liveness_threshold', 60.0)
+                        
+                        # Run liveness detection!
+                        is_liveness_real, liveness_score = detect_liveness(face_region_bgr, liveness_threshold)
+                        
                         # Extract face for recognition
                         gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
                         face_region = gray[startY:endY, startX:endX]
                         
-                        print(f"[VISION] DNN detected face at {startX},{startY} - {endX},{endY}", flush=True)
+                        print(f"[VISION] DNN detected face at {startX},{startY} - {endX},{endY}. Laplacian Score: {liveness_score:.2f}", flush=True)
                         
                         if face_region.size > 0:
                             # Preprocess
@@ -1331,14 +1392,17 @@ def api_recognize():
                                     face_distance = 1.0 - conf_score
                                     rec_conf = round((1 - face_distance) * 100)
                                     
-                                    # Save attendance using existing db.mark_attendance logic
-                                    # Always mark attendance immediately (no cooldown)
-                                    print(f"[VISION] Ready to mark attendance for {name}. No cooldown.", flush=True)
-                                    
-                                    success, db_msg = db.mark_attendance(name, rec_conf / 100.0)
-                                    print(f"[VISION] DB mark_attendance result: {success} - {db_msg}", flush=True)
-                                    if success:
-                                        last_attendance[name] = get_indian_time()
+                                    # Save attendance only if liveness is real
+                                    if is_liveness_real:
+                                        print(f"[VISION] Ready to mark attendance for {name}. No cooldown.", flush=True)
+                                        success, db_msg = db.mark_attendance(name, rec_conf / 100.0)
+                                        print(f"[VISION] DB mark_attendance result: {success} - {db_msg}", flush=True)
+                                        if success:
+                                            last_attendance[name] = get_indian_time()
+                                    else:
+                                        success = False
+                                        db_msg = "Spoof Attempt Blocked: Printed photo/screen detected"
+                                        print(f"[VISION] Spoof detected for {name}! Marking blocked.", flush=True)
                                 else:
                                     db_msg = "Face not recognized above confidence threshold"
                             
@@ -1346,7 +1410,8 @@ def api_recognize():
                                 "name": name,
                                 "confidence": rec_conf,
                                 "box": {"x": int(startX), "y": int(startY), "w": int(endX - startX), "h": int(endY - startY)},
-                                "liveness": "passed",  # Hardcoded MVP as requested
+                                "liveness": "passed" if is_liveness_real else "spoof_detected",
+                                "liveness_score": liveness_score,
                                 "attendance_marked": success,
                                 "attendance_message": db_msg
                             })

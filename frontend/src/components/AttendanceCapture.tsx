@@ -72,15 +72,16 @@ function AttendanceCapture() {
 
   // Audio and visual notification states
   const lastAudioRef = useRef<{ [name: string]: number }>({});
-  const [successBanner, setSuccessBanner] = useState<{ name: string; score: number; type: 'marked' | 'already_marked' } | null>(null);
+  const [successBanner, setSuccessBanner] = useState<{ name: string; score: number; type: 'marked' | 'already_marked' | 'spoof_detected' } | null>(null);
   const [flashBorder, setFlashBorder] = useState<'green' | 'blue' | 'red' | null>(null);
 
-  // Retrieve threshold from settings
+  // Retrieve settings
   const savedSettings = localStorage.getItem('attendanceSettings');
   const settings = savedSettings ? JSON.parse(savedSettings) : {};
   const threshold = settings.confidenceThreshold !== undefined ? settings.confidenceThreshold : 0.45;
+  const livenessThreshold = settings.livenessThreshold !== undefined ? settings.livenessThreshold : 60;
 
-  const playAudio = useCallback((audioFile: string) => {
+  const speakMessage = useCallback((text: string, fallbackWav: string) => {
     try {
       const savedSettings = localStorage.getItem('attendanceSettings');
       const settings = savedSettings ? JSON.parse(savedSettings) : {};
@@ -89,13 +90,32 @@ function AttendanceCapture() {
       
       if (!soundEnabled) return;
 
-      const audio = new Audio(`${API_BASE_URL}/audio/${audioFile}`);
-      audio.volume = soundVolume / 100;
-      audio.play().catch(err => {
-        console.warn('Audio playback failed:', err);
-      });
+      if ('speechSynthesis' in window) {
+        // Cancel ongoing to prevent queue overlap
+        window.speechSynthesis.cancel();
+        
+        const utterance = new SpeechSynthesisUtterance(text);
+        utterance.volume = soundVolume / 100;
+        
+        // Pick best available voice
+        const voices = window.speechSynthesis.getVoices();
+        const englishVoice = voices.find(v => v.lang.startsWith('en'));
+        if (englishVoice) {
+          utterance.voice = englishVoice;
+        }
+        
+        window.speechSynthesis.speak(utterance);
+      } else {
+        const audio = new Audio(`${API_BASE_URL}/audio/${fallbackWav}`);
+        audio.volume = soundVolume / 100;
+        audio.play().catch(err => console.warn('Audio playback failed:', err));
+      }
     } catch (err) {
-      console.warn('Audio creation failed:', err);
+      console.warn('Voice synthesis failed, using static backup:', err);
+      try {
+        const audio = new Audio(`${API_BASE_URL}/audio/${fallbackWav}`);
+        audio.play().catch(console.error);
+      } catch (e) {}
     }
   }, []);
 
@@ -173,7 +193,8 @@ function AttendanceCapture() {
         setIsProcessing(true);
         const response = await axios.post(`${API_BASE_URL}/api/recognize`, {
           image: base64Image,
-          threshold: threshold
+          threshold: threshold,
+          liveness_threshold: livenessThreshold
         });
         
         const faces: FaceResult[] = response.data.faces || [];
@@ -198,12 +219,27 @@ function AttendanceCapture() {
           const now = Date.now();
 
           faces.forEach(face => {
-            if (face.name !== 'Unknown') {
+            if (face.liveness === 'spoof_detected') {
+              // Spoofing attempt detected!
+              flashType = 'red';
+              const lastPlayed = lastAudioRef.current['__spoof__'] || 0;
+              if (now - lastPlayed > 8000) {
+                speakMessage("Warning: Spoofing attempt detected. Access denied.", "person_not_detected.wav");
+                lastAudioRef.current['__spoof__'] = now;
+              }
+              
+              setSuccessBanner({ name: face.name !== 'Unknown' ? face.name : 'Unknown Device', score: face.confidence, type: 'spoof_detected' });
+              
+              setTimeout(() => {
+                setSuccessBanner(prev => prev && prev.type === 'spoof_detected' ? null : prev);
+              }, 4000);
+              
+            } else if (face.name !== 'Unknown') {
               const lastPlayed = lastAudioRef.current[face.name] || 0;
 
               if (face.attendance_marked) {
                 // Attendance marked successfully just now!
-                playAudio('attendance_marked.wav');
+                speakMessage(`Attendance marked for ${face.name}!`, 'attendance_marked.wav');
                 lastAudioRef.current[face.name] = now;
 
                 setSuccessBanner({ name: face.name, score: face.confidence, type: 'marked' });
@@ -217,7 +253,7 @@ function AttendanceCapture() {
                 // Attendance is already marked!
                 // Play audio only if we haven't played it for this person in the last 15 seconds to prevent audio spam
                 if (now - lastPlayed > 15000) {
-                  playAudio('attendance_is_already_marked.wav');
+                  speakMessage(`Attendance is already marked, ${face.name}.`, 'attendance_is_already_marked.wav');
                   lastAudioRef.current[face.name] = now;
                 }
 
@@ -242,7 +278,7 @@ function AttendanceCapture() {
               // Play person_not_detected voice alert with a cooldown of 10s to prevent spamming
               const lastUnknownPlayed = lastAudioRef.current['__unknown__'] || 0;
               if (now - lastUnknownPlayed > 10000) {
-                playAudio('person_not_detected.wav');
+                speakMessage("Face unrecognized. Access denied.", 'person_not_detected.wav');
                 lastAudioRef.current['__unknown__'] = now;
               }
             }
@@ -270,7 +306,8 @@ function AttendanceCapture() {
             
             // Determine color based on liveness
             let strokeColor = '#f44336'; // Red
-            if (face.attendance_marked) strokeColor = '#4caf50'; // Green
+            if (face.liveness === 'spoof_detected') strokeColor = '#d32f2f'; // Dark red for spoof
+            else if (face.attendance_marked) strokeColor = '#4caf50'; // Green
             else if (face.attendance_message && face.attendance_message.toLowerCase().includes('already marked')) strokeColor = '#2196f3'; // Blue
             else if (face.liveness === 'passed') strokeColor = '#4caf50'; // Green fallback
             
@@ -281,9 +318,13 @@ function AttendanceCapture() {
             
             // Label Background
             overlayCtx.fillStyle = strokeColor;
-            const text = face.name !== 'Unknown' && face.confidence > 0 
+            let text = face.name !== 'Unknown' && face.confidence > 0 
               ? `${face.name} (${face.confidence}%)` 
               : face.name;
+            
+            if (face.liveness === 'spoof_detected') {
+              text = `${face.name !== 'Unknown' ? face.name : 'Unknown'} [SPOOF!]`;
+            }
               
             overlayCtx.fillRect(x, y - 30, w, 30);
             
@@ -311,7 +352,7 @@ function AttendanceCapture() {
         streamRef.current.getTracks().forEach(track => track.stop());
       }
     };
-  }, [threshold, playAudio]);
+  }, [threshold, livenessThreshold, speakMessage]);
 
   // Derived values for the score badge
   const scoreColor = getScoreColor(avgScore);
@@ -417,7 +458,7 @@ function AttendanceCapture() {
                 animation: 'slideIn 0.3s ease-out'
               }}>
                 <Alert 
-                  severity={successBanner.type === 'marked' ? 'success' : 'info'} 
+                  severity={successBanner.type === 'marked' ? 'success' : successBanner.type === 'spoof_detected' ? 'error' : 'info'} 
                   icon={successBanner.type === 'marked' ? <CheckCircle /> : undefined}
                   sx={{
                     boxShadow: 4,
@@ -425,7 +466,11 @@ function AttendanceCapture() {
                     fontSize: '0.95rem',
                     fontWeight: 750,
                     backdropFilter: 'blur(6px)',
-                    bgcolor: successBanner.type === 'marked' ? 'rgba(76, 175, 80, 0.95)' : 'rgba(33, 150, 243, 0.95)',
+                    bgcolor: successBanner.type === 'marked' 
+                      ? 'rgba(76, 175, 80, 0.95)' 
+                      : successBanner.type === 'spoof_detected'
+                      ? 'rgba(211, 47, 47, 0.95)'
+                      : 'rgba(33, 150, 243, 0.95)',
                     color: 'white',
                     '& .MuiAlert-icon': {
                       color: 'white'
@@ -434,6 +479,8 @@ function AttendanceCapture() {
                 >
                   {successBanner.type === 'marked' 
                     ? `Success! Attendance marked for ${successBanner.name}`
+                    : successBanner.type === 'spoof_detected'
+                    ? `⚠️ SPOOF BLOCKED: Device photo/screen spoof detected!`
                     : `Attendance already marked for ${successBanner.name}`}
                 </Alert>
               </Box>

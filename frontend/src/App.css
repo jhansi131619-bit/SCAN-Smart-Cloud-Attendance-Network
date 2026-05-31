@@ -36,3 +36,20 @@
     transform: rotate(360deg);
   }
 }
+
+/* Webkit Autofill styling overrides to maintain premium dark glassmorphism */
+input:-webkit-autofill,
+input:-webkit-autofill:hover, 
+input:-webkit-autofill:focus, 
+input:-webkit-autofill:active {
+  -webkit-box-shadow: 0 0 0 1000px rgb(15, 23, 42) inset !important;
+  -webkit-text-fill-color: #ffffff !important;
+  caret-color: #ffffff !important;
+  transition: background-color 5000s ease-in-out 0s;
+}
+
+/* Also override for autocomplete styles in MUI inputs specifically */
+.MuiOutlinedInput-root input:-webkit-autofill {
+  -webkit-box-shadow: 0 0 0 1000px rgb(20, 27, 47) inset !important;
+  border-radius: 8px !important;
+}

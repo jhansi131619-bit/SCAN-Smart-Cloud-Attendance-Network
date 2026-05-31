@@ -28,7 +28,8 @@ import {
   Avatar,
   CircularProgress,
   TextField,
-  Stack
+  Stack,
+  Divider
 } from '@mui/material';
 import { 
   CameraAlt, 
@@ -55,60 +56,14 @@ import Dashboard from './components/Dashboard';
 import axios from 'axios';
 import { API_BASE_URL } from './config';
 
-const theme = createTheme({
-  palette: {
-    primary: {
-      main: '#1976d2',
-    },
-    secondary: {
-      main: '#4caf50',
-    },
-    background: {
-      default: '#f8fafc',
-    },
-  },
-  typography: {
-    fontFamily: '"Inter", "Segoe UI", "Roboto", sans-serif',
-    h6: {
-      fontWeight: 600,
-    },
-  },
-  shape: {
-    borderRadius: 8,
-  },
-  breakpoints: {
-    values: {
-      xs: 0,
-      sm: 600,
-      md: 900,
-      lg: 1200,
-      xl: 1536,
-    },
-  },
-  components: {
-    MuiButton: {
-      styleOverrides: {
-        root: {
-          borderRadius: 8,
-          textTransform: 'none',
-          fontWeight: 500,
-        },
-      },
-    },
-    MuiContainer: {
-      styleOverrides: {
-        root: {
-          paddingLeft: 8,
-          paddingRight: 8,
-          '@media (min-width: 600px)': {
-            paddingLeft: 16,
-            paddingRight: 16,
-          },
-        },
-      },
-    },
-  },
-});
+interface NotificationItem {
+  id: string;
+  title: string;
+  description: string;
+  time: string;
+  type: 'info' | 'success' | 'warning' | 'error';
+  read: boolean;
+}
 
 interface TabPanelProps {
   children?: React.ReactNode;
@@ -137,6 +92,8 @@ function TabPanel(props: TabPanelProps) {
 }
 
 function App() {
+  const [themeMode, setThemeMode] = useState<'light' | 'dark'>('light');
+
   // User session state (Teacher vs Student)
   const [user, setUser] = useState<{ name: string; role: 'teacher' | 'student' } | null>(() => {
     const saved = localStorage.getItem('scanUserSession');
@@ -144,17 +101,147 @@ function App() {
   });
 
   const [usernameInput, setUsernameInput] = useState('');
+  const [passwordInput, setPasswordInput] = useState('');
   const [loginError, setLoginError] = useState<string | null>(null);
   const [loginLoading, setLoginLoading] = useState(false);
 
   const [tabValue, setTabValue] = useState(0);
   const [anchorEl, setAnchorEl] = useState<null | HTMLElement>(null);
-  const [notifications, setNotifications] = useState(3); // Mock notification count
+  const [notificationAnchorEl, setNotificationAnchorEl] = useState<null | HTMLElement>(null);
+  const [notifications, setNotifications] = useState<NotificationItem[]>([
+    {
+      id: '1',
+      title: 'Database Synchronized',
+      description: 'MongoDB Atlas daily logs successfully synced with local database cache.',
+      time: 'Just now',
+      type: 'success',
+      read: false
+    },
+    {
+      id: '2',
+      title: 'LBPH Predictor Armed',
+      description: 'Loaded and trained face recognition system with 5 registered profiles.',
+      time: '10m ago',
+      type: 'info',
+      read: false
+    },
+    {
+      id: '3',
+      title: 'Liveness Protection Active',
+      description: 'Laplacian texture analysis enabled on high-resolution kiosks.',
+      time: '1h ago',
+      type: 'success',
+      read: false
+    }
+  ]);
+  const unreadCount = notifications.filter(n => !n.read).length;
+
   const [connectionStatus, setConnectionStatus] = useState<'connected' | 'disconnected' | 'checking'>('checking');
   const [showConnectionAlert, setShowConnectionAlert] = useState(false);
   const [showAboutDialog, setShowAboutDialog] = useState(false);
   const [lastActivity, setLastActivity] = useState<string>('');
   const [isLoading, setIsLoading] = useState(false);
+
+  const handleNotificationClick = (event: React.MouseEvent<HTMLElement>) => {
+    setNotificationAnchorEl(event.currentTarget);
+  };
+
+  const handleNotificationClose = () => {
+    setNotificationAnchorEl(null);
+    setNotifications(prev => prev.map(n => ({ ...n, read: true })));
+  };
+
+  const handleClearNotifications = () => {
+    setNotifications([]);
+    setNotificationAnchorEl(null);
+  };
+
+  useEffect(() => {
+    const applyTheme = () => {
+      const savedSettings = localStorage.getItem('attendanceSettings');
+      const settings = savedSettings ? JSON.parse(savedSettings) : {};
+      const configTheme = settings.theme || 'light';
+      
+      if (configTheme === 'auto') {
+        const prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
+        setThemeMode(prefersDark ? 'dark' : 'light');
+      } else {
+        setThemeMode(configTheme === 'dark' ? 'dark' : 'light');
+      }
+    };
+    
+    applyTheme();
+    
+    // Listen for custom theme change events
+    window.addEventListener('scanThemeChanged', applyTheme);
+    return () => window.removeEventListener('scanThemeChanged', applyTheme);
+  }, []);
+
+  const activeTheme = React.useMemo(() => {
+    const isDark = themeMode === 'dark';
+    return createTheme({
+      palette: {
+        mode: isDark ? 'dark' : 'light',
+        primary: {
+          main: '#2563EB', // Vibrant sapphire/indigo
+        },
+        secondary: {
+          main: '#10B981', // Harmonious emerald
+        },
+        background: {
+          default: isDark ? '#090D1A' : '#f8fafc',
+          paper: isDark ? '#111827' : '#ffffff',
+        },
+        text: {
+          primary: isDark ? '#f3f4f6' : '#1f2937',
+          secondary: isDark ? '#9ca3af' : '#4b5563',
+        }
+      },
+      typography: {
+        fontFamily: '"Inter", "Segoe UI", "Roboto", sans-serif',
+        h4: {
+          fontWeight: 800,
+        },
+        h6: {
+          fontWeight: 600,
+        },
+      },
+      shape: {
+        borderRadius: 12,
+      },
+      components: {
+        MuiButton: {
+          styleOverrides: {
+            root: {
+              borderRadius: 10,
+              textTransform: 'none',
+              fontWeight: 600,
+              transition: 'all 0.2s ease',
+            },
+          },
+        },
+        MuiCard: {
+          styleOverrides: {
+            root: {
+              borderRadius: 14,
+              border: isDark ? '1px solid rgba(255,255,255,0.06)' : '1px solid rgba(0,0,0,0.04)',
+              boxShadow: isDark 
+                ? '0 4px 20px rgba(0,0,0,0.4)' 
+                : '0 4px 20px rgba(0,0,0,0.03)',
+            }
+          }
+        },
+        MuiAppBar: {
+          styleOverrides: {
+            root: {
+              backgroundColor: isDark ? '#111827' : '#ffffff',
+              borderBottom: isDark ? '1px solid rgba(255,255,255,0.08)' : '1px solid rgba(0,0,0,0.06)',
+            }
+          }
+        }
+      },
+    });
+  }, [themeMode]);
 
   useEffect(() => {
     checkConnection();
@@ -208,11 +295,16 @@ function App() {
       setLoginError('Username is required');
       return;
     }
+    if (!passwordInput.trim()) {
+      setLoginError('Password is required');
+      return;
+    }
     try {
       setLoginLoading(true);
       setLoginError(null);
       const response = await axios.post(`${API_BASE_URL}/api/login`, {
-        username: usernameInput.trim()
+        username: usernameInput.trim(),
+        password: passwordInput.trim()
       });
       if (response.data.status === 'success') {
         const session = {
@@ -223,6 +315,7 @@ function App() {
         setUser(session as any);
         setTabValue(0); // Go to Dashboard on login
         setUsernameInput('');
+        setPasswordInput('');
       } else {
         setLoginError(response.data.message || 'Login failed');
       }
@@ -295,7 +388,7 @@ function App() {
 
   if (!user) {
     return (
-      <ThemeProvider theme={theme}>
+      <ThemeProvider theme={activeTheme}>
         <CssBaseline />
         <Box
           sx={{
@@ -375,6 +468,28 @@ function App() {
                   }}
                 />
 
+                <TextField
+                  fullWidth
+                  label="Password"
+                  type="password"
+                  variant="outlined"
+                  value={passwordInput}
+                  onChange={(e) => setPasswordInput(e.target.value)}
+                  disabled={loginLoading}
+                  placeholder="Enter password"
+                  InputLabelProps={{ style: { color: 'rgba(255, 255, 255, 0.7)' } }}
+                  sx={{
+                    '& .MuiOutlinedInput-root': {
+                      color: 'white',
+                      bgcolor: 'rgba(255,255,255,0.05)',
+                      borderRadius: 2,
+                      '& fieldset': { borderColor: 'rgba(255, 255, 255, 0.15)' },
+                      '&:hover fieldset': { borderColor: 'rgba(255, 255, 255, 0.3)' },
+                      '&.Mui-focused fieldset': { borderColor: 'primary.main' }
+                    }
+                  }}
+                />
+
                 <Button
                   type="submit"
                   variant="contained"
@@ -407,10 +522,10 @@ function App() {
   }
 
   return (
-    <ThemeProvider theme={theme}>
+    <ThemeProvider theme={activeTheme}>
       <CssBaseline />
       <Box sx={{ minHeight: '100vh', bgcolor: 'background.default' }}>
-        <AppBar position="static" elevation={0} sx={{ bgcolor: 'white', color: 'text.primary' }}>
+        <AppBar position="static" elevation={0} sx={{ bgcolor: 'background.paper', color: 'text.primary' }}>
           <Toolbar sx={{ minHeight: { xs: 56, sm: 64 } }}>
             <Box sx={{ display: 'flex', alignItems: 'center', gap: { xs: 1, sm: 2 }, flex: 1 }}>
               <Box
@@ -469,13 +584,95 @@ function App() {
                 <IconButton 
                   color="inherit" 
                   size={window.innerWidth < 600 ? 'small' : 'medium'}
-                  onClick={() => setNotifications(0)}
+                  onClick={handleNotificationClick}
                 >
-                  <Badge badgeContent={notifications} color="error">
+                  <Badge badgeContent={unreadCount} color="error">
                     <Notifications />
                   </Badge>
                 </IconButton>
               </Tooltip>
+
+              <Menu
+                anchorEl={notificationAnchorEl}
+                open={Boolean(notificationAnchorEl)}
+                onClose={handleNotificationClose}
+                transformOrigin={{ vertical: 'top', horizontal: 'right' }}
+                anchorOrigin={{ vertical: 'bottom', horizontal: 'right' }}
+                PaperProps={{
+                  sx: {
+                    maxHeight: 400,
+                    width: 320,
+                    borderRadius: 3,
+                    boxShadow: '0 8px 32px rgba(0,0,0,0.15)',
+                    p: 1,
+                    mt: 1.5,
+                    bgcolor: 'background.paper',
+                    border: '1px solid rgba(255,255,255,0.06)'
+                  }
+                }}
+              >
+                <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', p: 1.5 }}>
+                  <Typography variant="subtitle1" fontWeight="bold">
+                    System Notifications
+                  </Typography>
+                  {notifications.length > 0 && (
+                    <Button size="small" onClick={handleClearNotifications} sx={{ fontWeight: 'bold' }}>
+                      Clear All
+                    </Button>
+                  )}
+                </Box>
+                <Divider />
+                {notifications.length === 0 ? (
+                  <Box sx={{ p: 3, textAlign: 'center' }}>
+                    <Typography variant="body2" color="text.secondary">
+                      No new notifications
+                    </Typography>
+                  </Box>
+                ) : (
+                  notifications.map((notif) => (
+                    <MenuItem 
+                      key={notif.id} 
+                      onClick={handleNotificationClose}
+                      sx={{ 
+                        display: 'flex', 
+                        flexDirection: 'column', 
+                        alignItems: 'flex-start',
+                        whiteSpace: 'normal',
+                        borderRadius: 2,
+                        my: 0.5,
+                        p: 1.5,
+                        bgcolor: notif.read ? 'transparent' : 'rgba(37, 99, 235, 0.05)',
+                        '&:hover': {
+                          bgcolor: 'action.hover'
+                        }
+                      }}
+                    >
+                      <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, width: '100%', mb: 0.5 }}>
+                        <Box sx={{ 
+                          width: 8, 
+                          height: 8, 
+                          borderRadius: '50%', 
+                          bgcolor: notif.type === 'success' 
+                            ? 'success.main' 
+                            : notif.type === 'warning' 
+                            ? 'warning.main' 
+                            : 'primary.main',
+                          display: notif.read ? 'none' : 'block'
+                        }} />
+                        <Typography variant="body2" fontWeight="bold" sx={{ flex: 1 }}>
+                          {notif.title}
+                        </Typography>
+                        <Typography variant="caption" color="text.secondary">
+                          {notif.time}
+                        </Typography>
+                      </Box>
+                      <Typography variant="caption" color="text.secondary" sx={{ width: '100%' }}>
+                        {notif.description}
+                      </Typography>
+                    </MenuItem>
+                  ))
+                )}
+              </Menu>
               
               <Tooltip title={`Backend: ${connectionStatus}`}>
                 <IconButton 
