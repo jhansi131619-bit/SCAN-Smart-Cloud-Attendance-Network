@@ -207,7 +207,6 @@ docker-compose restart
 
 **Your enterprise-ready face recognition system is live! 🎉**
 
-- Frontend: http://localhost:3000
-- Backend API: http://localhost:5002
-- Documentation: See DEPLOYMENT.md
+- Frontend: [https://scan-smart-cloud-attendance-network-1.onrender.com](https://scan-smart-cloud-attendance-network-1.onrender.com)
+- Backend API: [https://scan-smart-cloud-attendance-network.onrender.com](https://scan-smart-cloud-attendance-network.onrender.com)
 # attendance
