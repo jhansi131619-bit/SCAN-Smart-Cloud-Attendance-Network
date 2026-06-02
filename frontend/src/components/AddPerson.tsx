@@ -15,7 +15,14 @@ import {
   Stepper,
   Step,
   StepLabel,
-  Paper
+  Paper,
+  MenuItem,
+  IconButton,
+  Tooltip,
+  Dialog,
+  DialogTitle,
+  DialogContent,
+  DialogActions
 } from '@mui/material';
 import { 
   PersonAdd, 
@@ -24,7 +31,8 @@ import {
   CameraAlt, 
   Face, 
   Close, 
-  Star 
+  Star,
+  Add
 } from '@mui/icons-material';
 import axios from 'axios';
 import { API_BASE_URL } from '../config';
@@ -40,6 +48,8 @@ const ANGLES = [
 function AddPerson() {
   const webcamRef = useRef<Webcam>(null);
   const [name, setName] = useState('');
+  const [className, setClassName] = useState('');
+  const [classes, setClasses] = useState<string[]>([]);
   const [isLoading, setIsLoading] = useState(false);
   const [message, setMessage] = useState('');
   const [isSuccess, setIsSuccess] = useState(false);
@@ -51,10 +61,63 @@ function AddPerson() {
   const [currentStep, setCurrentStep] = useState(0);
   const [isRegistering, setIsRegistering] = useState(false);
 
+  // Add Class Dialog states
+  const [showAddClassDialog, setShowAddClassDialog] = useState(false);
+  const [newClassName, setNewClassName] = useState('');
+  const [addClassLoading, setAddClassLoading] = useState(false);
+
+  const handleCreateClass = async () => {
+    if (!newClassName.trim()) return;
+    try {
+      setAddClassLoading(true);
+      const res = await axios.post(`${API_BASE_URL}/api/classes`, {
+        class_name: newClassName.trim()
+      });
+      if (res.data && res.data.status === 'success') {
+        const addedClass = newClassName.trim();
+        setNewClassName('');
+        setShowAddClassDialog(false);
+        // Refresh classes and select the new class
+        const fetchRes = await axios.get(`${API_BASE_URL}/api/classes`);
+        if (fetchRes.data && fetchRes.data.status === 'success') {
+          const classList = fetchRes.data.classes || [];
+          setClasses(classList);
+          setClassName(addedClass);
+        }
+      } else {
+        alert(res.data.message || 'Failed to create class');
+      }
+    } catch (err: any) {
+      console.error('Error creating class:', err);
+      alert(err.response?.data?.message || 'Error creating class');
+    } finally {
+      setAddClassLoading(false);
+    }
+  };
+
   // Retrieve threshold from settings
   const savedSettings = localStorage.getItem('attendanceSettings');
   const settings = savedSettings ? JSON.parse(savedSettings) : {};
   const threshold = settings.confidenceThreshold !== undefined ? settings.confidenceThreshold : 0.45;
+
+  // Load dynamic classes
+  useEffect(() => {
+    const fetchClasses = async () => {
+      try {
+        const res = await axios.get(`${API_BASE_URL}/api/classes`);
+        if (res.data && res.data.status === 'success') {
+          const classList = res.data.classes || [];
+          setClasses(classList);
+          if (classList.length > 0) {
+            setClassName(classList[0]);
+          }
+        }
+      } catch (err) {
+        console.error('Error fetching classes:', err);
+      }
+    };
+    fetchClasses();
+  }, []);
 
   // Release backend camera on unmount to prevent device locking
   useEffect(() => {
@@ -119,7 +182,8 @@ function AddPerson() {
         await axios.post(`${API_BASE_URL}/add-person`, {
           name: name.trim(),
           image: imageSrc,
-          angle: ''
+          angle: '',
+          class_name: className
         });
 
         setMessage(`Successfully added ${name} to the system!`);
@@ -138,7 +202,8 @@ function AddPerson() {
       try {
         await axios.post(`${API_BASE_URL}/add-person-backend`, {
           name: name.trim(),
-          angle: ''
+          angle: '',
+          class_name: className
         });
 
         setMessage(`Successfully added ${name} to the system using SCAN camera!`);
@@ -174,9 +239,10 @@ function AddPerson() {
         await axios.post(`${API_BASE_URL}/add-person`, {
           name: name.trim(),
           image: imageSrc,
-          angle: angleObj.id
+          angle: angleObj.id,
+          class_name: className
         });
-
+ 
         // Step captured successfully!
         if (currentStep < ANGLES.length - 1) {
           setCurrentStep(prev => prev + 1);
@@ -210,7 +276,8 @@ function AddPerson() {
       try {
         await axios.post(`${API_BASE_URL}/add-person-backend`, {
           name: name.trim(),
-          angle: angleObj.id
+          angle: angleObj.id,
+          class_name: className
         });
 
         // Step captured successfully!
@@ -278,7 +345,6 @@ function AddPerson() {
 
       <Card sx={{ p: { xs: 2, sm: 3 } }}>
         <Stack spacing={{ xs: 2, sm: 3 }}>
-          {/* Name Input */}
           <TextField
             label="Full Name"
             value={name}
@@ -288,6 +354,40 @@ function AddPerson() {
             placeholder="Enter person's name"
             variant="outlined"
           />
+
+          {/* Class Name Input */}
+          <Box sx={{ display: 'flex', gap: 1, width: '100%', alignItems: 'center' }}>
+            <TextField
+              select
+              label="Class Name"
+              value={className}
+              onChange={(e) => setClassName(e.target.value)}
+              disabled={isRegistering}
+              fullWidth
+              variant="outlined"
+            >
+              {classes.map((cls) => (
+                <MenuItem key={cls} value={cls}>
+                  {cls}
+                </MenuItem>
+              ))}
+            </TextField>
+            <Tooltip title="Add New Class">
+              <IconButton 
+                color="primary" 
+                onClick={() => setShowAddClassDialog(true)}
+                disabled={isRegistering}
+                sx={{ 
+                  border: '1px solid',
+                  borderColor: 'divider',
+                  borderRadius: 2,
+                  p: 1.2
+                }}
+              >
+                <Add />
+              </IconButton>
+            </Tooltip>
+          </Box>
 
           {/* Registration Mode and Camera Source Selection */}
           {!isRegistering && (
@@ -587,6 +687,51 @@ function AddPerson() {
            This dramatically increases recognition reliability when students approach the camera at slightly different angles or tilts during attendance marking.
         </Typography>
       </Card>
+      {/* Dialog for adding new class room */}
+      <Dialog 
+        open={showAddClassDialog} 
+        onClose={() => setShowAddClassDialog(false)}
+        maxWidth="xs"
+        fullWidth
+      >
+        <DialogTitle sx={{ fontWeight: 'bold' }}>Add New Class Room</DialogTitle>
+        <DialogContent sx={{ pb: 1 }}>
+          <TextField
+            autoFocus
+            margin="dense"
+            label="Class Name"
+            type="text"
+            fullWidth
+            placeholder="e.g., Class 10-C, Physics-B"
+            value={newClassName}
+            onChange={(e) => setNewClassName(e.target.value)}
+            disabled={addClassLoading}
+            variant="outlined"
+            sx={{
+              '& .MuiOutlinedInput-root': {
+                borderRadius: 2,
+              }
+            }}
+          />
+        </DialogContent>
+        <DialogActions sx={{ px: 3, pb: 2 }}>
+          <Button 
+            onClick={() => setShowAddClassDialog(false)} 
+            disabled={addClassLoading}
+            sx={{ borderRadius: 2 }}
+          >
+            Cancel
+          </Button>
+          <Button 
+            onClick={handleCreateClass} 
+            variant="contained"
+            disabled={addClassLoading || !newClassName.trim()}
+            sx={{ borderRadius: 2, fontWeight: 'bold' }}
+          >
+            {addClassLoading ? 'Adding...' : 'Add Class'}
+          </Button>
+        </DialogActions>
+      </Dialog>
     </Box>
   );
 }

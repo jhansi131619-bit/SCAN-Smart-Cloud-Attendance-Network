@@ -7,9 +7,18 @@ import {
   Chip,
   Stack,
   Divider,
-  CircularProgress
+  CircularProgress,
+  TextField,
+  MenuItem,
+  IconButton,
+  Tooltip,
+  Dialog,
+  DialogTitle,
+  DialogContent,
+  DialogActions,
+  Button
 } from '@mui/material';
-import { CheckCircle, ErrorOutline, Videocam } from '@mui/icons-material';
+import { CheckCircle, ErrorOutline, Videocam, Add } from '@mui/icons-material';
 import axios from 'axios';
 import { API_BASE_URL } from '../config';
 
@@ -20,6 +29,8 @@ interface FaceResult {
   liveness: string;
   attendance_marked?: boolean;
   attendance_message?: string;
+  class_name?: string;
+  period?: string;
 }
 
 /**
@@ -58,6 +69,63 @@ function AttendanceCapture() {
   const [error, setError] = useState<string | null>(null);
   const [connectionStatus, setConnectionStatus] = useState<'connected' | 'disconnected' | 'checking'>('checking');
   
+  const [classes, setClasses] = useState<string[]>([]);
+  const [selectedClass, setSelectedClass] = useState<string>('');
+  const [selectedPeriod, setSelectedPeriod] = useState<string>('Period 1');
+
+  // Add Class Dialog states
+  const [showAddClassDialog, setShowAddClassDialog] = useState(false);
+  const [newClassName, setNewClassName] = useState('');
+  const [addClassLoading, setAddClassLoading] = useState(false);
+
+  const handleCreateClass = async () => {
+    if (!newClassName.trim()) return;
+    try {
+      setAddClassLoading(true);
+      const res = await axios.post(`${API_BASE_URL}/api/classes`, {
+        class_name: newClassName.trim()
+      });
+      if (res.data && res.data.status === 'success') {
+        const addedClass = newClassName.trim();
+        setNewClassName('');
+        setShowAddClassDialog(false);
+        // Refresh classes and select the new class
+        const fetchRes = await axios.get(`${API_BASE_URL}/api/classes`);
+        if (fetchRes.data && fetchRes.data.status === 'success') {
+          const classList = fetchRes.data.classes || [];
+          setClasses(classList);
+          setSelectedClass(addedClass);
+        }
+      } else {
+        alert(res.data.message || 'Failed to create class');
+      }
+    } catch (err: any) {
+      console.error('Error creating class:', err);
+      alert(err.response?.data?.message || 'Error creating class');
+    } finally {
+      setAddClassLoading(false);
+    }
+  };
+
+  // Load dynamic classes
+  useEffect(() => {
+    const fetchClasses = async () => {
+      try {
+        const res = await axios.get(`${API_BASE_URL}/api/classes`);
+        if (res.data && res.data.status === 'success') {
+          const classList = res.data.classes || [];
+          setClasses(classList);
+          if (classList.length > 0) {
+            setSelectedClass(classList[0]);
+          }
+        }
+      } catch (err) {
+        console.error('Error fetching classes:', err);
+      }
+    };
+    fetchClasses();
+  }, []);
+  
   const videoRef = useRef<HTMLVideoElement>(null);
   const canvasOverlayRef = useRef<HTMLCanvasElement>(null);
   const hiddenCanvasRef = useRef<HTMLCanvasElement>(null);
@@ -72,7 +140,7 @@ function AttendanceCapture() {
 
   // Audio and visual notification states
   const lastAudioRef = useRef<{ [name: string]: number }>({});
-  const [successBanner, setSuccessBanner] = useState<{ name: string; score: number; type: 'marked' | 'already_marked' | 'spoof_detected' } | null>(null);
+  const [successBanner, setSuccessBanner] = useState<{ name: string; score: number; type: 'marked' | 'already_marked' | 'spoof_detected'; class_name?: string; period?: string } | null>(null);
   const [flashBorder, setFlashBorder] = useState<'green' | 'blue' | 'red' | null>(null);
 
   // Retrieve settings
@@ -194,7 +262,9 @@ function AttendanceCapture() {
         const response = await axios.post(`${API_BASE_URL}/api/recognize`, {
           image: base64Image,
           threshold: threshold,
-          liveness_threshold: livenessThreshold
+          liveness_threshold: livenessThreshold,
+          class_name: selectedClass,
+          period: selectedPeriod
         });
         
         const faces: FaceResult[] = response.data.faces || [];
@@ -239,10 +309,18 @@ function AttendanceCapture() {
 
               if (face.attendance_marked) {
                 // Attendance marked successfully just now!
-                speakMessage(`Attendance marked for ${face.name}!`, 'attendance_marked.wav');
+                const markedClass = face.class_name || selectedClass;
+                const markedPeriod = face.period || selectedPeriod;
+                speakMessage(`Attendance marked for ${face.name} in class ${markedClass} for ${markedPeriod}!`, 'attendance_marked.wav');
                 lastAudioRef.current[face.name] = now;
 
-                setSuccessBanner({ name: face.name, score: face.confidence, type: 'marked' });
+                setSuccessBanner({ 
+                  name: face.name, 
+                  score: face.confidence, 
+                  type: 'marked',
+                  class_name: markedClass,
+                  period: markedPeriod
+                });
                 flashType = 'green';
 
                 // Clear banner after 4 seconds
@@ -251,15 +329,23 @@ function AttendanceCapture() {
                 }, 4000);
               } else if (face.attendance_message && face.attendance_message.toLowerCase().includes('already marked')) {
                 // Attendance is already marked!
+                const markedClass = face.class_name || selectedClass;
+                const markedPeriod = face.period || selectedPeriod;
                 // Play audio only if we haven't played it for this person in the last 15 seconds to prevent audio spam
                 if (now - lastPlayed > 15000) {
-                  speakMessage(`Attendance is already marked, ${face.name}.`, 'attendance_is_already_marked.wav');
+                  speakMessage(`Attendance is already marked for ${face.name} in class ${markedClass} for ${markedPeriod}.`, 'attendance_is_already_marked.wav');
                   lastAudioRef.current[face.name] = now;
                 }
 
                 setSuccessBanner(prev => {
                   if (!prev || prev.type === 'already_marked') {
-                    return { name: face.name, score: face.confidence, type: 'already_marked' };
+                    return { 
+                      name: face.name, 
+                      score: face.confidence, 
+                      type: 'already_marked',
+                      class_name: markedClass,
+                      period: markedPeriod
+                    };
                   }
                   return prev;
                 });
@@ -352,7 +438,7 @@ function AttendanceCapture() {
         streamRef.current.getTracks().forEach(track => track.stop());
       }
     };
-  }, [threshold, livenessThreshold, speakMessage]);
+  }, [threshold, livenessThreshold, speakMessage, selectedClass, selectedPeriod]);
 
   // Derived values for the score badge
   const scoreColor = getScoreColor(avgScore);
@@ -397,6 +483,56 @@ function AttendanceCapture() {
             {isProcessing && <CircularProgress size={16} sx={{ ml: 1 }} />}
           </Box>
           <Divider sx={{ width: '100%' }} />
+
+          {/* Class & Period Selection Row */}
+          <Stack direction={{ xs: 'column', sm: 'row' }} spacing={2} sx={{ width: '100%', mb: 1, alignItems: 'center' }}>
+            <Box sx={{ display: 'flex', gap: 1, width: '100%', alignItems: 'center' }}>
+              <TextField
+                select
+                label="Select Class"
+                value={selectedClass}
+                onChange={(e) => setSelectedClass(e.target.value)}
+                fullWidth
+                variant="outlined"
+              >
+                {classes.map((cls) => (
+                  <MenuItem key={cls} value={cls}>
+                    {cls}
+                  </MenuItem>
+                ))}
+              </TextField>
+              <Tooltip title="Add New Class">
+                <IconButton 
+                  color="primary" 
+                  onClick={() => setShowAddClassDialog(true)}
+                  sx={{ 
+                    border: '1px solid',
+                    borderColor: 'divider',
+                    borderRadius: 2,
+                    p: 1.2
+                  }}
+                >
+                  <Add />
+                </IconButton>
+              </Tooltip>
+            </Box>
+ 
+            <TextField
+              select
+              label="Select Period"
+              value={selectedPeriod}
+              onChange={(e) => setSelectedPeriod(e.target.value)}
+              fullWidth
+              variant="outlined"
+            >
+              <MenuItem value="Period 1">Period 1</MenuItem>
+              <MenuItem value="Period 2">Period 2</MenuItem>
+              <MenuItem value="Period 3">Period 3</MenuItem>
+              <MenuItem value="Period 4">Period 4</MenuItem>
+              <MenuItem value="Period 5">Period 5</MenuItem>
+              <MenuItem value="Period 6">Period 6</MenuItem>
+            </TextField>
+          </Stack>
           
           {/* ── Video container with score badge overlay and glow flash border ── */}
           <Box sx={{ 
@@ -478,10 +614,10 @@ function AttendanceCapture() {
                   }}
                 >
                   {successBanner.type === 'marked' 
-                    ? `Success! Attendance marked for ${successBanner.name}`
+                    ? `Success! Attendance marked for ${successBanner.name} (${successBanner.class_name} • ${successBanner.period})`
                     : successBanner.type === 'spoof_detected'
                     ? `⚠️ SPOOF BLOCKED: Device photo/screen spoof detected!`
-                    : `Attendance already marked for ${successBanner.name}`}
+                    : `Attendance already marked for ${successBanner.name} (${successBanner.class_name} • ${successBanner.period})`}
                 </Alert>
               </Box>
             )}
@@ -577,6 +713,51 @@ function AttendanceCapture() {
           <strong>Interactive Kiosk Feedback:</strong> When a face is successfully matched, the terminal will instantly flash green and announce your attendance marking with a voice confirmation.
         </Typography>
       </Card>
+      {/* Dialog for adding new class room */}
+      <Dialog 
+        open={showAddClassDialog} 
+        onClose={() => setShowAddClassDialog(false)}
+        maxWidth="xs"
+        fullWidth
+      >
+        <DialogTitle sx={{ fontWeight: 'bold' }}>Add New Class Room</DialogTitle>
+        <DialogContent sx={{ pb: 1 }}>
+          <TextField
+            autoFocus
+            margin="dense"
+            label="Class Name"
+            type="text"
+            fullWidth
+            placeholder="e.g., Class 10-C, Physics-B"
+            value={newClassName}
+            onChange={(e) => setNewClassName(e.target.value)}
+            disabled={addClassLoading}
+            variant="outlined"
+            sx={{
+              '& .MuiOutlinedInput-root': {
+                borderRadius: 2,
+              }
+            }}
+          />
+        </DialogContent>
+        <DialogActions sx={{ px: 3, pb: 2 }}>
+          <Button 
+            onClick={() => setShowAddClassDialog(false)} 
+            disabled={addClassLoading}
+            sx={{ borderRadius: 2 }}
+          >
+            Cancel
+          </Button>
+          <Button 
+            onClick={handleCreateClass} 
+            variant="contained"
+            disabled={addClassLoading || !newClassName.trim()}
+            sx={{ borderRadius: 2, fontWeight: 'bold' }}
+          >
+            {addClassLoading ? 'Adding...' : 'Add Class'}
+          </Button>
+        </DialogActions>
+      </Dialog>
     </Box>
   );
 }

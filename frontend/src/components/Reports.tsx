@@ -37,6 +37,8 @@ interface AttendanceRecord {
   date: string;
   time: string;
   confidence: number;
+  class_name?: string;
+  period?: string;
 }
 
 interface ReportFilters {
@@ -44,6 +46,8 @@ interface ReportFilters {
   endDate: string;
   person: string;
   minConfidence: number;
+  class_name: string;
+  period: string;
 }
 
 interface AttendanceStats {
@@ -59,13 +63,16 @@ function Reports() {
   const [records, setRecords] = useState<AttendanceRecord[]>([]);
   const [filteredRecords, setFilteredRecords] = useState<AttendanceRecord[]>([]);
   const [knownPeople, setKnownPeople] = useState<string[]>([]);
+  const [classes, setClasses] = useState<string[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [filters, setFilters] = useState<ReportFilters>({
     startDate: new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString().split('T')[0], // 30 days ago
     endDate: new Date().toISOString().split('T')[0], // today
     person: 'all',
-    minConfidence: 0.5
+    minConfidence: 0.5,
+    class_name: 'all',
+    period: 'all'
   });
 
   useEffect(() => {
@@ -85,6 +92,16 @@ function Reports() {
 
       // Person filter
       if (filters.person !== 'all' && record.name !== filters.person) {
+        return false;
+      }
+
+      // Class filter
+      if (filters.class_name !== 'all' && (record.class_name || 'N/A') !== filters.class_name) {
+        return false;
+      }
+
+      // Period filter
+      if (filters.period !== 'all' && (record.period || 'N/A') !== filters.period) {
         return false;
       }
 
@@ -108,16 +125,19 @@ function Reports() {
       setIsLoading(true);
       setError(null);
       
-      const [attendanceResponse, facesResponse] = await Promise.all([
+      const [attendanceResponse, facesResponse, classesResponse] = await Promise.all([
         axios.get(`${API_BASE_URL}/attendance-records`),
         axios.get(`${API_BASE_URL}/known-faces`),
+        axios.get(`${API_BASE_URL}/api/classes`),
       ]);
 
       const attendanceData = attendanceResponse.data.records || [];
       const facesData = facesResponse.data.people || [];
+      const classesData = classesResponse.data.classes || [];
       
       setRecords(attendanceData);
       setKnownPeople(facesData.map((face: any) => face.name));
+      setClasses(classesData);
     } catch (err: any) {
       setError(err.response?.data?.message || 'Failed to fetch data');
     } finally {
@@ -173,9 +193,11 @@ function Reports() {
 
   const exportToCSV = () => {
     const csvContent = [
-      ['Name', 'Date', 'Time', 'Confidence'],
+      ['Name', 'Class', 'Period', 'Date', 'Time', 'Confidence'],
       ...filteredRecords.map(record => [
         record.name,
+        record.class_name || 'N/A',
+        record.period || 'N/A',
         record.date,
         record.time,
         (record.confidence * 100).toFixed(1) + '%'
@@ -216,22 +238,32 @@ function Reports() {
       <h1>Attendance Report</h1>
       <p><strong>Period:</strong> ${filters.startDate} to ${filters.endDate}</p>
       <p><strong>Person:</strong> ${filters.person === 'all' ? 'All People' : filters.person}</p>
+      <p><strong>Class:</strong> ${filters.class_name === 'all' ? 'All Classes' : filters.class_name}</p>
+      <p><strong>Period:</strong> ${filters.period === 'all' ? 'All Periods' : filters.period}</p>
       <p><strong>Total Records:</strong> ${filteredRecords.length}</p>
-      <table border="1" style="border-collapse: collapse; width: 100%;">
-        <tr>
-          <th>Name</th>
-          <th>Date</th>
-          <th>Time</th>
-          <th>Confidence</th>
-        </tr>
-        ${filteredRecords.map(record => `
-          <tr>
-            <td>${record.name}</td>
-            <td>${record.date}</td>
-            <td>${record.time}</td>
-            <td>${(record.confidence * 100).toFixed(1)}%</td>
+      <table border="1" style="border-collapse: collapse; width: 100%; text-align: left; padding: 8px;">
+        <thead>
+          <tr style="background-color: #f2f2f2;">
+            <th style="padding: 8px;">Name</th>
+            <th style="padding: 8px;">Class</th>
+            <th style="padding: 8px;">Period</th>
+            <th style="padding: 8px;">Date</th>
+            <th style="padding: 8px;">Time</th>
+            <th style="padding: 8px;">Confidence</th>
           </tr>
-        `).join('')}
+        </thead>
+        <tbody>
+          ${filteredRecords.map(record => `
+            <tr>
+              <td style="padding: 8px;">${record.name}</td>
+              <td style="padding: 8px;">${record.class_name || 'N/A'}</td>
+              <td style="padding: 8px;">${record.period || 'N/A'}</td>
+              <td style="padding: 8px;">${record.date}</td>
+              <td style="padding: 8px;">${record.time}</td>
+              <td style="padding: 8px;">${(record.confidence * 100).toFixed(1)}%</td>
+            </tr>
+          `).join('')}
+        </tbody>
       </table>
     `;
     
@@ -272,7 +304,7 @@ function Reports() {
             <FilterList />
             Filters
           </Typography>
-          <Box sx={{ display: 'grid', gridTemplateColumns: { xs: '1fr', sm: '1fr 1fr', md: '1fr 1fr 1fr 1fr' }, gap: 3 }}>
+          <Box sx={{ display: 'grid', gridTemplateColumns: { xs: '1fr', sm: '1fr 1fr', md: '1fr 1fr 1fr', lg: '1fr 1fr 1fr 1fr 1fr 1fr' }, gap: 2 }}>
             <TextField
               fullWidth
               label="Start Date"
@@ -300,6 +332,37 @@ function Reports() {
                 {knownPeople.map(person => (
                   <MenuItem key={person} value={person}>{person}</MenuItem>
                 ))}
+              </Select>
+            </FormControl>
+            <FormControl fullWidth>
+              <InputLabel>Class</InputLabel>
+              <Select
+                value={filters.class_name}
+                label="Class"
+                onChange={(e) => setFilters(prev => ({ ...prev, class_name: e.target.value }))}
+              >
+                <MenuItem value="all">All Classes</MenuItem>
+                {classes.map((cls) => (
+                  <MenuItem key={cls} value={cls}>
+                    {cls}
+                  </MenuItem>
+                ))}
+              </Select>
+            </FormControl>
+            <FormControl fullWidth>
+              <InputLabel>Period</InputLabel>
+              <Select
+                value={filters.period}
+                label="Period"
+                onChange={(e) => setFilters(prev => ({ ...prev, period: e.target.value }))}
+              >
+                <MenuItem value="all">All Periods</MenuItem>
+                <MenuItem value="Period 1">Period 1</MenuItem>
+                <MenuItem value="Period 2">Period 2</MenuItem>
+                <MenuItem value="Period 3">Period 3</MenuItem>
+                <MenuItem value="Period 4">Period 4</MenuItem>
+                <MenuItem value="Period 5">Period 5</MenuItem>
+                <MenuItem value="Period 6">Period 6</MenuItem>
               </Select>
             </FormControl>
             <TextField
@@ -425,6 +488,8 @@ function Reports() {
                 <TableHead>
                   <TableRow>
                     <TableCell sx={{ fontWeight: 600 }}>Name</TableCell>
+                    <TableCell sx={{ fontWeight: 600 }}>Class</TableCell>
+                    <TableCell sx={{ fontWeight: 600 }}>Period</TableCell>
                     <TableCell sx={{ fontWeight: 600 }}>Date</TableCell>
                     <TableCell sx={{ fontWeight: 600 }}>Time</TableCell>
                     <TableCell sx={{ fontWeight: 600 }}>Confidence</TableCell>
@@ -434,6 +499,8 @@ function Reports() {
                   {filteredRecords.map((record, index) => (
                     <TableRow key={index} hover>
                       <TableCell sx={{ fontWeight: 500 }}>{record.name}</TableCell>
+                      <TableCell>{record.class_name || 'N/A'}</TableCell>
+                      <TableCell>{record.period || 'N/A'}</TableCell>
                       <TableCell>{record.date}</TableCell>
                       <TableCell>{record.time}</TableCell>
                       <TableCell>

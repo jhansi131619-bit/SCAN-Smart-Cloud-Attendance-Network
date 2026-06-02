@@ -50,6 +50,8 @@ interface AttendanceRecord {
   date: string;
   time: string;
   confidence: number;
+  class_name?: string;
+  period?: string;
 }
 
 interface AttendanceFilters {
@@ -58,6 +60,8 @@ interface AttendanceFilters {
   dateFrom: string;
   dateTo: string;
   minConfidence: number;
+  class_name: string;
+  period: string;
 }
 
 type SortOrder = 'asc' | 'desc';
@@ -80,6 +84,7 @@ function AttendanceView({ studentName }: AttendanceViewProps = {}) {
   const [records, setRecords] = useState<AttendanceRecord[]>([]);
   const [filteredRecords, setFilteredRecords] = useState<AttendanceRecord[]>([]);
   const [knownPeople, setKnownPeople] = useState<string[]>([]);
+  const [classes, setClasses] = useState<string[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [refreshing, setRefreshing] = useState(false);
@@ -98,16 +103,30 @@ function AttendanceView({ studentName }: AttendanceViewProps = {}) {
     person: 'all',
     dateFrom: '',
     dateTo: '',
-    minConfidence: 0
+    minConfidence: 0,
+    class_name: 'all',
+    period: 'all'
   });
   
   // Statistics
   const [showStats, setShowStats] = useState(false);
   const [autoRefresh, setAutoRefresh] = useState(true);
 
+  const fetchClasses = async () => {
+    try {
+      const res = await axios.get(`${API_BASE_URL}/api/classes`);
+      if (res.data && res.data.status === 'success') {
+        setClasses(res.data.classes || []);
+      }
+    } catch (err) {
+      console.error('Error fetching classes:', err);
+    }
+  };
+
   useEffect(() => {
     fetchAttendanceRecords();
     fetchKnownPeople();
+    fetchClasses();
   }, []);
 
   useEffect(() => {
@@ -191,6 +210,16 @@ function AttendanceView({ studentName }: AttendanceViewProps = {}) {
         return false;
       }
       
+      // Class filter
+      if (filters.class_name !== 'all' && (record.class_name || 'N/A') !== filters.class_name) {
+        return false;
+      }
+
+      // Period filter
+      if (filters.period !== 'all' && (record.period || 'N/A') !== filters.period) {
+        return false;
+      }
+      
       return true;
     });
 
@@ -234,7 +263,9 @@ function AttendanceView({ studentName }: AttendanceViewProps = {}) {
       person: 'all',
       dateFrom: '',
       dateTo: '',
-      minConfidence: 0
+      minConfidence: 0,
+      class_name: 'all',
+      period: 'all'
     });
   };
 
@@ -269,9 +300,11 @@ function AttendanceView({ studentName }: AttendanceViewProps = {}) {
 
   const exportFilteredCSV = () => {
     const csvContent = [
-      ['Name', 'Date', 'Time', 'Confidence'],
+      ['Name', 'Class', 'Period', 'Date', 'Time', 'Confidence'],
       ...filteredRecords.map(record => [
         record.name,
+        record.class_name || 'N/A',
+        record.period || 'N/A',
         record.date,
         record.time,
         (record.confidence * 100).toFixed(1) + '%'
@@ -455,6 +488,39 @@ function AttendanceView({ studentName }: AttendanceViewProps = {}) {
               </Select>
             </FormControl>
 
+          <FormControl size="small" sx={{ minWidth: 150 }}>
+            <InputLabel>Class</InputLabel>
+            <Select
+              value={filters.class_name}
+              label="Class"
+              onChange={(e) => setFilters(prev => ({ ...prev, class_name: e.target.value }))}
+            >
+              <MenuItem value="all">All Classes</MenuItem>
+              {classes.map((cls) => (
+                <MenuItem key={cls} value={cls}>
+                  {cls}
+                </MenuItem>
+              ))}
+            </Select>
+          </FormControl>
+
+          <FormControl size="small" sx={{ minWidth: 150 }}>
+            <InputLabel>Period</InputLabel>
+            <Select
+              value={filters.period}
+              label="Period"
+              onChange={(e) => setFilters(prev => ({ ...prev, period: e.target.value }))}
+            >
+              <MenuItem value="all">All Periods</MenuItem>
+              <MenuItem value="Period 1">Period 1</MenuItem>
+              <MenuItem value="Period 2">Period 2</MenuItem>
+              <MenuItem value="Period 3">Period 3</MenuItem>
+              <MenuItem value="Period 4">Period 4</MenuItem>
+              <MenuItem value="Period 5">Period 5</MenuItem>
+              <MenuItem value="Period 6">Period 6</MenuItem>
+            </Select>
+          </FormControl>
+
           <TextField
             label="From Date"
             type="date"
@@ -565,6 +631,8 @@ function AttendanceView({ studentName }: AttendanceViewProps = {}) {
                           Name
                         </TableSortLabel>
                       </TableCell>
+                      <TableCell>Class</TableCell>
+                      <TableCell>Period</TableCell>
                       <TableCell>
                         <TableSortLabel
                           active={sortBy === 'date'}
@@ -604,6 +672,8 @@ function AttendanceView({ studentName }: AttendanceViewProps = {}) {
                             {record.name}
                           </Box>
                         </TableCell>
+                         <TableCell>{record.class_name || 'N/A'}</TableCell>
+                         <TableCell>{record.period || 'N/A'}</TableCell>
                         <TableCell>
                           <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
                             <Today fontSize="small" color="action" />

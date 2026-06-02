@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import {
   Box,
   Typography,
@@ -10,7 +10,10 @@ import {
   Dialog,
   DialogTitle,
   DialogContent,
-  DialogActions
+  DialogActions,
+  Chip,
+  Divider,
+  Stack
 } from '@mui/material';
 import { People, Delete, Refresh } from '@mui/icons-material';
 import axios from 'axios';
@@ -20,6 +23,7 @@ interface KnownPerson {
   name: string;
   image_path: string;
   date_added: string;
+  class_name?: string;
 }
 
 function KnownFaces() {
@@ -31,6 +35,17 @@ function KnownFaces() {
     open: false,
     person: null
   });
+  const [previewImage, setPreviewImage] = useState<string | null>(null);
+
+  // Class roster distribution counts
+  const classCounts = useMemo(() => {
+    const counts: { [key: string]: number } = {};
+    people.forEach((person) => {
+      const cls = person.class_name || 'N/A';
+      counts[cls] = (counts[cls] || 0) + 1;
+    });
+    return counts;
+  }, [people]);
 
   useEffect(() => {
     fetchKnownFaces();
@@ -134,6 +149,28 @@ function KnownFaces() {
           </Button>
         </Box>
 
+        {/* Class Distribution Section */}
+        {people.length > 0 && Object.keys(classCounts).length > 0 && (
+          <Box sx={{ mb: 3 }}>
+            <Typography variant="subtitle2" color="text.secondary" gutterBottom sx={{ fontWeight: 600 }}>
+              🏫 Class Roster Distribution
+            </Typography>
+            <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap sx={{ gap: 1, mt: 1 }}>
+              {Object.entries(classCounts).map(([cls, count]) => (
+                <Chip
+                  key={cls}
+                  label={`${cls}: ${count}`}
+                  color="primary"
+                  variant="outlined"
+                  size="small"
+                  sx={{ fontWeight: 'bold', py: 1.5 }}
+                />
+              ))}
+            </Stack>
+            <Divider sx={{ mt: 2.5 }} />
+          </Box>
+        )}
+
         {people.length === 0 ? (
           <Box sx={{ textAlign: 'center', py: { xs: 3, sm: 4 } }}>
             <Typography 
@@ -183,6 +220,7 @@ function KnownFaces() {
               >
                   <Avatar
                     src={`${API_BASE_URL}/images/${person.image_path}`}
+                    onClick={() => setPreviewImage(person.image_path)}
                     sx={{ 
                       width: { xs: 80, sm: 100 }, 
                       height: { xs: 80, sm: 100 }, 
@@ -190,6 +228,12 @@ function KnownFaces() {
                       mb: 2,
                       border: '3px solid #e3f2fd',
                       boxShadow: '0 4px 8px rgba(0,0,0,0.1)',
+                      cursor: 'pointer',
+                      transition: 'transform 0.2s ease-in-out',
+                      '&:hover': {
+                        transform: 'scale(1.08)',
+                        boxShadow: '0 6px 12px rgba(25, 118, 210, 0.25)'
+                      },
                       '& img': {
                         objectFit: 'cover'
                       }
@@ -214,6 +258,18 @@ function KnownFaces() {
                     }}
                   >
                     {person.name}
+                  </Typography>
+                  
+                  <Typography 
+                    variant="body2" 
+                    sx={{ 
+                      fontWeight: 600,
+                      color: 'primary.main',
+                      mb: 0.5,
+                      fontSize: { xs: '0.8rem', sm: '0.875rem' }
+                    }}
+                  >
+                    Class: {person.class_name || 'N/A'}
                   </Typography>
                   
                   <Typography 
@@ -302,6 +358,36 @@ function KnownFaces() {
             Delete
           </Button>
         </DialogActions>
+      </Dialog>
+
+      {/* Full Image Preview Dialog */}
+      <Dialog
+        open={Boolean(previewImage)}
+        onClose={() => setPreviewImage(null)}
+        maxWidth="md"
+        fullWidth
+      >
+        <DialogTitle sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+          Registered Face Image Preview
+          <Button onClick={() => setPreviewImage(null)} color="secondary">
+            Close
+          </Button>
+        </DialogTitle>
+        <DialogContent sx={{ textAlign: 'center', p: 2 }}>
+          {previewImage && (
+            <img
+              src={`${API_BASE_URL}/images/${previewImage}`}
+              alt="Full face registration"
+              style={{
+                maxWidth: '100%',
+                maxHeight: '70vh',
+                borderRadius: '8px',
+                boxShadow: '0 4px 15px rgba(0,0,0,0.2)',
+                objectFit: 'contain'
+              }}
+            />
+          )}
+        </DialogContent>
       </Dialog>
     </Box>
   );

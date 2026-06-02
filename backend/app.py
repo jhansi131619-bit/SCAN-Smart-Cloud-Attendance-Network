@@ -124,6 +124,8 @@ face_descriptors = []  # Store face feature descriptors
 is_trained = False
 last_active_frame = None
 active_camera_capture = None  # To hold the active VideoCapture object for force-release
+temp_registration_images = {}  # Buffer for multi-angle face registration
+
 
 # Real-time scan feedback status
 last_scanned_status = {
@@ -243,6 +245,9 @@ def load_known_faces():
     """Load and train the face recognizer with known faces"""
     global known_faces, known_names, face_labels, is_trained
     
+    # Sync and restore missing faces from persistent database
+    db.sync_local_faces(KNOWN_FACES_DIR)
+    
     known_faces = []
     known_names = []
     face_labels = []
@@ -268,54 +273,28 @@ def load_known_faces():
                     maxSize=(300, 300)
                 )
                 
-                if len(faces) > 0:
-                    # Take the largest face (most likely the main subject)
-                    largest_face = max(faces, key=lambda face: face[2] * face[3])
-                    x, y, w, h = largest_face
-                    
-                    # Add some padding around the face
-                    padding = 10
-                    x = max(0, x - padding)
-                    y = max(0, y - padding)
-                    w = min(gray.shape[1] - x, w + 2 * padding)
-                    h = min(gray.shape[0] - y, h + 2 * padding)
-                    
-                    face_region = gray[y:y+h, x:x+w]
-                    # Standardize face size for better recognition
-                    face_region = cv2.resize(face_region, (150, 150))
-                    
-                    # Apply histogram equalization for better lighting normalization
-                    face_region = cv2.equalizeHist(face_region)
-                    # Apply Gaussian blur to reduce noise
-                    face_region = cv2.GaussianBlur(face_region, (3, 3), 0)
-                    
-                    known_faces.append(face_region)
-                    name = filename.split('.')[0]
-                    # Strip any angle suffixes (e.g. _front, _left, _right, _up, _down) for training mapping
-                    for suffix in ['_front', '_left', '_right', '_up', '_down', '_smile', '_tilt']:
-                        if name.endswith(suffix):
-                            name = name[:-len(suffix)]
-                            break
-                    known_names.append(name)
-                    face_labels.append(label_counter)
-                    
-                    print(f"Loaded face for: {name} (Label: {label_counter})")
-                    label_counter += 1
-                else:
-                    print(f"No face detected in {filename}. Trying with different parameters...")
-                    # Try with more relaxed parameters for difficult images
-                    faces_relaxed = face_cascade.detectMultiScale(
+                # If strict failed, try relaxed parameters
+                if len(faces) == 0:
+                    print(f"No face detected in {filename} with strict parameters. Trying with relaxed parameters...")
+                    faces = face_cascade.detectMultiScale(
                         gray, 
                         scaleFactor=1.05, 
                         minNeighbors=3, 
                         minSize=(20, 20),
                         maxSize=(400, 400)
                     )
-                    
-                    if len(faces_relaxed) > 0:
-                        print(f"Face detected with relaxed parameters for {filename}")
-                        largest_face = max(faces_relaxed, key=lambda face: face[2] * face[3])
-                        x, y, w, h = largest_face
+                
+                if len(faces) > 0:
+                    name = filename.split('.')[0]
+                    # Strip any angle suffixes (e.g. _front, _left, etc.) for legacy training mapping
+                    for suffix in ['_front', '_left', '_right', '_up', '_down', '_smile', '_tilt']:
+                        if name.endswith(suffix):
+                            name = name[:-len(suffix)]
+                            break
+                            
+                    faces_loaded_for_person = 0
+                    for face_rect in faces:
+                        x, y, w, h = face_rect
                         
                         # Add some padding around the face
                         padding = 10
@@ -325,25 +304,25 @@ def load_known_faces():
                         h = min(gray.shape[0] - y, h + 2 * padding)
                         
                         face_region = gray[y:y+h, x:x+w]
+                        if face_region.size == 0:
+                            continue
+                            
+                        # Standardize face size for better recognition
                         face_region = cv2.resize(face_region, (150, 150))
+                        # Apply histogram equalization
                         face_region = cv2.equalizeHist(face_region)
+                        # Apply Gaussian blur
                         face_region = cv2.GaussianBlur(face_region, (3, 3), 0)
                         
                         known_faces.append(face_region)
-                        name = filename.split('.')[0]
-                        # Strip any angle suffixes (e.g. _front, _left, _right, _up, _down) for training mapping
-                        for suffix in ['_front', '_left', '_right', '_up', '_down', '_smile', '_tilt']:
-                            if name.endswith(suffix):
-                                name = name[:-len(suffix)]
-                                break
                         known_names.append(name)
-                        parent_label = label_counter
                         face_labels.append(label_counter)
+                        faces_loaded_for_person += 1
                         
-                        print(f"Loaded face for: {name} (Label: {label_counter}) with relaxed detection")
-                        label_counter += 1
-                    else:
-                        print(f"Still no face detected in {filename}. Skipping...")
+                    print(f"Loaded {faces_loaded_for_person} face(s) for: {name} (Label: {label_counter})")
+                    label_counter += 1
+                else:
+                    print(f"Still no face detected in {filename}. Skipping...")
     
     if len(known_faces) > 0:
         if use_lbph and recognizer is not None:
@@ -535,6 +514,51 @@ def debug_info():
         return jsonify({"error": str(e)}), 500
 
 
+@app.route('/api/classes', methods=['GET', 'POST', 'DELETE'])
+def manage_classes():
+    """Retrieve, create, or delete classes"""
+    if request.method == 'GET':
+        try:
+            classes_list = db.get_all_classes()
+            return jsonify({"status": "success", "classes": classes_list})
+        except Exception as e:
+            return jsonify({"status": "error", "message": str(e)}), 500
+            
+    elif request.method == 'POST':
+        try:
+            data = request.get_json() or {}
+            class_name = data.get('class_name', '').strip()
+            if not class_name:
+                return jsonify({"status": "error", "message": "Class name is required"}), 400
+            
+            success, message = db.create_class(class_name)
+            if success:
+                return jsonify({"status": "success", "message": message}), 201
+            else:
+                return jsonify({"status": "error", "message": message}), 400
+        except Exception as e:
+            return jsonify({"status": "error", "message": str(e)}), 500
+            
+    elif request.method == 'DELETE':
+        try:
+            data = request.get_json() or {}
+            class_name = data.get('class_name', '').strip()
+            if not class_name:
+                # Fallback to query parameters
+                class_name = request.args.get('class_name', '').strip()
+                
+            if not class_name:
+                return jsonify({"status": "error", "message": "Class name is required"}), 400
+                
+            success, message = db.delete_class_db(class_name)
+            if success:
+                return jsonify({"status": "success", "message": message})
+            else:
+                return jsonify({"status": "error", "message": message}), 400
+        except Exception as e:
+            return jsonify({"status": "error", "message": str(e)}), 500
+
+
 @app.route('/audio/<filename>')
 def serve_audio(filename):
     """Serve audio files"""
@@ -567,6 +591,116 @@ def serve_image(filename):
     except Exception as e:
         return jsonify({"error": f"Error serving image: {str(e)}"}), 500
 
+def save_and_process_registration(name, image, angle, class_name=None):
+    """
+    Handles saving the registered face image. If an angle is provided for multi-angle registration,
+    buffers the images in memory and stitches them into a single horizontal strip on the 5th capture step.
+    """
+    global temp_registration_images
+    
+    # If single photo registration (no angle)
+    if not angle:
+        filename = f"{name}.jpg"
+        imagekit_url = upload_image_to_imagekit(image, filename)
+        if not imagekit_url or imagekit_url == "local_storage_fallback":
+            imagekit_url = "Local storage only"
+        
+        filepath = os.path.join(KNOWN_FACES_DIR, filename)
+        os.makedirs(KNOWN_FACES_DIR, exist_ok=True)
+        
+        success = cv2.imwrite(filepath, image)
+        if not success:
+            return {"success": False, "message": "Failed to save training copy"}, 500
+            
+        # Convert image to base64 and save to DB for persistent cloud restore
+        try:
+            _, img_buffer = cv2.imencode('.jpg', image)
+            img_b64 = base64.b64encode(img_buffer).decode('utf-8')
+            db.save_person(name, img_b64, class_name)
+        except Exception as db_err:
+            print(f"[DB] Error saving person to database during registration: {db_err}")
+            
+        load_known_faces()
+        db.mark_attendance(name, 1.0, class_name)
+        return {
+            "success": True,
+            "message": f"Person '{name}' added successfully and attendance marked",
+            "filename": filename,
+            "imagekit_url": imagekit_url,
+            "local_filepath": filepath
+        }, 200
+
+    # Multi-angle registration mode
+    if angle == 'front':
+        temp_registration_images[name] = [image]
+    else:
+        if name not in temp_registration_images:
+            temp_registration_images[name] = []
+        temp_registration_images[name].append(image)
+        
+    num_buffered = len(temp_registration_images[name])
+    print(f"[REGISTRATION] Buffered angle '{angle}' for {name}. Total: {num_buffered}/5")
+    
+    # If we have all 5 angles or it's the final angle, stitch them and save/retrain
+    if num_buffered >= 5 or angle == 'down':
+        frames = temp_registration_images.pop(name, [])
+        if not frames:
+            frames = [image]
+            
+        # Stitch frames horizontally
+        target_height = 480
+        target_width = 640
+        resized_frames = []
+        for f in frames:
+            if f.shape[0] != target_height or f.shape[1] != target_width:
+                f = cv2.resize(f, (target_width, target_height))
+            resized_frames.append(f)
+            
+        combined_image = cv2.hconcat(resized_frames)
+        
+        filename = f"{name}.jpg"
+        imagekit_url = upload_image_to_imagekit(combined_image, filename)
+        if not imagekit_url or imagekit_url == "local_storage_fallback":
+            imagekit_url = "Local storage only"
+            
+        filepath = os.path.join(KNOWN_FACES_DIR, filename)
+        os.makedirs(KNOWN_FACES_DIR, exist_ok=True)
+        
+        success = cv2.imwrite(filepath, combined_image)
+        if not success:
+            return {"success": False, "message": "Failed to save combined training copy"}, 500
+            
+        # Convert stitched image to base64 and save to DB for persistent cloud restore
+        try:
+            _, img_buffer = cv2.imencode('.jpg', combined_image)
+            img_b64 = base64.b64encode(img_buffer).decode('utf-8')
+            db.save_person(name, img_b64, class_name)
+        except Exception as db_err:
+            print(f"[DB] Error saving stitched person to database during registration: {db_err}")
+            
+        # Retrain face recognition system
+        load_success = load_known_faces()
+        print(f"Model retraining after combined save: {load_success}")
+        
+        # Auto-mark attendance
+        db.mark_attendance(name, 1.0, class_name)
+        
+        return {
+            "success": True,
+            "message": f"Congratulations! Successfully registered '{name}' in High-Accuracy mode (5 angles) and marked attendance.",
+            "filename": filename,
+            "imagekit_url": imagekit_url,
+            "local_filepath": filepath
+        }, 200
+    else:
+        # Intermediate steps: return success but don't save file/train yet
+        return {
+            "success": True,
+            "message": f"Successfully captured {angle}! Proceed to next angle.",
+            "angle": angle,
+            "buffered": num_buffered
+        }, 200
+
 @app.route('/add-person', methods=['POST'])
 def add_person():
     """Add a new person to the system"""
@@ -575,24 +709,19 @@ def add_person():
         name = data.get('name', '').strip()
         image_data = data.get('image')
         angle = data.get('angle', '').strip()
+        class_name = data.get('class_name', '').strip()
         
-        print(f"Add person request received - Name: {name}, Angle: {angle}")
-        print(f"Known faces directory: {KNOWN_FACES_DIR}")
-        print(f"Directory exists: {os.path.exists(KNOWN_FACES_DIR)}")
+        print(f"Add person request received - Name: {name}, Angle: {angle}, Class: {class_name}")
         
         if not name or not image_data:
             return jsonify({"success": False, "message": "Name and image are required"}), 400
         
-        # Convert base64 to OpenCV image
         image = base64_to_cv2(image_data)
         if image is None:
             return jsonify({"success": False, "message": "Invalid image data"}), 400
         
-        print(f"Image converted successfully, size: {image.shape}")
-        
-        # Detect faces in the image
+        # Validate that a face is detected in the current image
         gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-        # Use same detection parameters as training and recognition
         faces = face_cascade.detectMultiScale(
             gray, 
             scaleFactor=1.1, 
@@ -601,10 +730,8 @@ def add_person():
             maxSize=(300, 300)
         )
         
-        print(f"Faces detected: {len(faces)}")
-        
         if len(faces) == 0:
-            print("[VISION] Strict detection failed in add_person. Retrying with relaxed parameters...")
+            print("[VISION] Strict detection failed. Retrying with relaxed parameters...")
             faces = face_cascade.detectMultiScale(
                 gray, 
                 scaleFactor=1.05, 
@@ -612,49 +739,13 @@ def add_person():
                 minSize=(20, 20),
                 maxSize=(400, 400)
             )
-            print(f"Faces detected after relaxation: {len(faces)}")
             
         if len(faces) == 0:
             return jsonify({"success": False, "message": "No face detected in the image. Please make sure your face is clearly visible."}), 400
         
-        # Upload image to ImageKit instead of saving locally
-        filename = f"{name}_{angle}.jpg" if angle else f"{name}.jpg"
-        imagekit_url = upload_image_to_imagekit(image, filename)
-        
-        if not imagekit_url or imagekit_url == "local_storage_fallback":
-            print("ImageKit upload failed or not available, continuing with local storage...")
-            imagekit_url = "Local storage only"
-        else:
-            print(f"Image uploaded to ImageKit: {imagekit_url}")
-        
-        # Also save locally for face recognition training (always required)
-        filepath = os.path.join(KNOWN_FACES_DIR, filename)
-        print(f"Saving local copy for training: {filepath}")
-        
-        # Ensure directory exists
-        os.makedirs(KNOWN_FACES_DIR, exist_ok=True)
-        
-        success = cv2.imwrite(filepath, image)
-        print(f"Local save successful: {success}")
-        
-        if not success:
-            return jsonify({"success": False, "message": "Failed to save local training copy"}), 500
-        
-        # Reload faces to include the new person
-        load_success = load_known_faces()
-        print(f"Model retraining successful: {load_success}")
-        
-        # Auto-mark attendance for the newly registered person
-        attendance_success, msg = db.mark_attendance(name, 1.0)
-        print(f"Auto-marked attendance for new person: {attendance_success} ({msg})")
-        
-        return jsonify({
-            "success": True,
-            "message": f"Person '{name}' added successfully and attendance marked",
-            "filename": filename,
-            "imagekit_url": imagekit_url,
-            "local_filepath": filepath
-        })
+        # Process and save via helper function
+        resp, status_code = save_and_process_registration(name, image, angle, class_name)
+        return jsonify(resp), status_code
         
     except Exception as e:
         print(f"Error in add_person: {str(e)}")
@@ -668,26 +759,24 @@ def add_person_backend():
         data = request.json
         name = data.get('name', '').strip()
         angle = data.get('angle', '').strip()
+        class_name = data.get('class_name', '').strip()
         
-        print(f"Add person backend request received - Name: {name}, Angle: {angle}")
+        print(f"Add person backend request received - Name: {name}, Angle: {angle}, Class: {class_name}")
         
         if not name:
             return jsonify({"success": False, "message": "Name is required"}), 400
         
         image = None
-        # 1. Try to use the last active frame from the stream
         if last_active_frame is not None:
             image = last_active_frame.copy()
             print("[VISION] Using last active frame from streaming camera")
         else:
-            # 2. If stream is not active, open camera temporarily to grab a frame
             print("[VISION] Stream not active. Opening camera temporarily...")
             temp_cap = cv2.VideoCapture(0)
             if not temp_cap.isOpened():
                 temp_cap = cv2.VideoCapture(1)
             
             if temp_cap.isOpened():
-                # Grab a few frames to let the auto-exposure adjust
                 for _ in range(5):
                     success, temp_frame = temp_cap.read()
                 if success:
@@ -697,10 +786,8 @@ def add_person_backend():
         if image is None:
             return jsonify({"success": False, "message": "Camera is not active and failed to initialize"}), 500
         
-        # Convert OpenCV image to gray for face detection
+        # Validate that a face is detected in the current image
         gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-        
-        # Detect faces with strict parameters
         faces = face_cascade.detectMultiScale(
             gray, 
             scaleFactor=1.1, 
@@ -710,7 +797,7 @@ def add_person_backend():
         )
         
         if len(faces) == 0:
-            print("[VISION] Strict detection failed in backend add. Retrying with relaxed parameters...")
+            print("[VISION] Strict detection failed. Retrying with relaxed parameters...")
             faces = face_cascade.detectMultiScale(
                 gray, 
                 scaleFactor=1.05, 
@@ -722,44 +809,9 @@ def add_person_backend():
         if len(faces) == 0:
             return jsonify({"success": False, "message": "No face detected in backend camera view. Please make sure you are in front of the camera and looking directly at it."}), 400
         
-        # Upload image to ImageKit instead of saving locally (optional, fallback to local)
-        filename = f"{name}_{angle}.jpg" if angle else f"{name}.jpg"
-        imagekit_url = upload_image_to_imagekit(image, filename)
-        
-        if not imagekit_url or imagekit_url == "local_storage_fallback":
-            print("ImageKit upload failed or not available, continuing with local storage...")
-            imagekit_url = "Local storage only"
-        else:
-            print(f"Image uploaded to ImageKit: {imagekit_url}")
-        
-        # Also save locally for face recognition training (always required)
-        filepath = os.path.join(KNOWN_FACES_DIR, filename)
-        print(f"Saving local copy for training: {filepath}")
-        
-        # Ensure directory exists
-        os.makedirs(KNOWN_FACES_DIR, exist_ok=True)
-        
-        success = cv2.imwrite(filepath, image)
-        print(f"Local save successful: {success}")
-        
-        if not success:
-            return jsonify({"success": False, "message": "Failed to save local training copy"}), 500
-        
-        # Reload faces to include the new person
-        load_success = load_known_faces()
-        print(f"Model retraining successful: {load_success}")
-        
-        # Auto-mark attendance for the newly registered person
-        attendance_success, msg = db.mark_attendance(name, 1.0)
-        print(f"Auto-marked attendance for new person: {attendance_success} ({msg})")
-        
-        return jsonify({
-            "success": True,
-            "message": f"Person '{name}' added successfully and attendance marked",
-            "filename": filename,
-            "imagekit_url": imagekit_url,
-            "local_filepath": filepath
-        })
+        # Process and save via helper function
+        resp, status_code = save_and_process_registration(name, image, angle, class_name)
+        return jsonify(resp), status_code
         
     except Exception as e:
         print(f"Error in add_person_backend: {str(e)}")
@@ -845,6 +897,8 @@ def mark_attendance():
         print("=== Mark Attendance Request ===")
         data = request.json
         image_data = data.get('image')
+        class_name = data.get('class_name', '').strip()
+        period = data.get('period', '').strip()
         
         if not image_data:
             print("Error: No image data provided")
@@ -915,7 +969,8 @@ def mark_attendance():
             
             # Check local memory cooldown first
             current_time = get_indian_time()
-            last_time = last_attendance.get(recognized_name)
+            cooldown_key = (recognized_name, class_name, period)
+            last_time = last_attendance.get(cooldown_key)
             
             allow_multiple = os.getenv("ALLOW_MULTIPLE_ATTENDANCE", "true").lower() == "true"
             if not allow_multiple and last_time and (current_time - last_time).total_seconds() < 60:
@@ -932,16 +987,43 @@ def mark_attendance():
                 })
             
             # Save attendance to DB and get detailed response
-            success, db_msg = db.mark_attendance(recognized_name, confidence_score)
+            success, db_msg = db.mark_attendance(recognized_name, confidence_score, class_name=class_name, period=period)
             
+            # Get actual registered class
+            logged_class = class_name
+            registered_class = None
+            if db.people_collection is not None:
+                try:
+                    person = db.people_collection.find_one({"name": recognized_name})
+                    if person:
+                        registered_class = person.get("class_name")
+                except:
+                    pass
+            else:
+                try:
+                    import sqlite3
+                    conn = sqlite3.connect(db.sqlite_db_path)
+                    cursor = conn.cursor()
+                    cursor.execute("SELECT class_name FROM registered_people WHERE name = ?", (recognized_name,))
+                    row = cursor.fetchone()
+                    conn.close()
+                    if row:
+                        registered_class = row[0]
+                except:
+                    pass
+            if registered_class:
+                logged_class = registered_class
+
             if success:
-                last_attendance[recognized_name] = current_time
+                last_attendance[cooldown_key] = current_time
                 return jsonify({
                     "success": True,
                     "name": recognized_name,
                     "confidence": confidence_score,
-                    "message": f"Attendance marked for {recognized_name}",
+                    "message": f"Attendance marked for {recognized_name} in class {logged_class} for {period}",
                     "audio": "attendance_marked",
+                    "class_name": logged_class,
+                    "period": period,
                     "face_rect": {"x": int(x), "y": int(y), "w": int(w), "h": int(h)}
                 })
             else:
@@ -1015,26 +1097,115 @@ def get_student_attendance(student_name):
 def download_attendance():
     """Download attendance records as Excel file built dynamically from MongoDB"""
     try:
+        def format_period_time(period, time_val):
+            period = (period or "").strip()
+            time_val = (time_val or "").strip()
+            if period and period != "N/A" and time_val:
+                return f"{period} ({time_val})"
+            elif period and period != "N/A":
+                return period
+            elif time_val:
+                return time_val
+            return "N/A"
+
+        # Get all registered people first to include them (even with 0 attendance)
+        people = db.get_all_people()
+        student_data = {}
+        for p in people:
+            name = p.get("name", "").strip()
+            if name:
+                # Keep proper case but use uppercase for dictionary key to handle case-insensitivity
+                student_data[name.upper()] = {
+                    "Name": name,
+                    "Class": p.get("class_name", "") or "N/A",
+                    "Total Attendance": 0,
+                    "Dates Attended": [],
+                    "Periods & Times": []
+                }
+
+        # Now process all attendance logs to aggregate counts
         records = db.get_attendance_records()
-        if not records:
+        
+        # We will also keep raw records for Sheet 2
+        raw_list = []
+
+        for r in records:
+            name = r.get("name", "").strip()
+            if not name:
+                continue
+            
+            log_class = r.get("class_name", "") or "N/A"
+            log_period = r.get("period", "") or "N/A"
+            log_date = r.get("date", "")
+            log_time = r.get("time", "")
+            log_conf = r.get("confidence", 0.0)
+
+            combined_pt = format_period_time(log_period, log_time)
+
+            # Raw record for Sheet 2
+            raw_list.append({
+                "Name": name,
+                "Class": log_class,
+                "Period & Time": combined_pt,
+                "Date": log_date,
+                "Confidence": f"{round(log_conf * 100)}%" if log_conf else "0%"
+            })
+            
+            name_key = name.upper()
+            if name_key not in student_data:
+                # Fallback for name not in registered list
+                student_data[name_key] = {
+                    "Name": name,
+                    "Class": log_class,
+                    "Total Attendance": 0,
+                    "Dates Attended": [],
+                    "Periods & Times": []
+                }
+            
+            student_data[name_key]["Total Attendance"] += 1
+            
+            # Collect unique dates, periods, and times
+            if log_date and log_date not in student_data[name_key]["Dates Attended"]:
+                student_data[name_key]["Dates Attended"].append(log_date)
+            if combined_pt and combined_pt != "N/A" and combined_pt not in student_data[name_key]["Periods & Times"]:
+                student_data[name_key]["Periods & Times"].append(combined_pt)
+
+            # If the log class is set and more specific, update it
+            if log_class and log_class != "N/A" and student_data[name_key]["Class"] == "N/A":
+                student_data[name_key]["Class"] = log_class
+
+        # Format list outputs to comma-separated strings for Sheet 1
+        summary_list = []
+        for name_key, data in student_data.items():
+            summary_list.append({
+                "Name": data["Name"],
+                "Class": data["Class"],
+                "Total Attendance": data["Total Attendance"],
+                "Dates Attended": ", ".join(data["Dates Attended"]) if data["Dates Attended"] else "None",
+                "Periods & Times": ", ".join(data["Periods & Times"]) if data["Periods & Times"] else "None"
+            })
+
+        summary_list.sort(key=lambda x: x["Name"])
+
+        if not summary_list:
             return jsonify({"success": False, "message": "No attendance records found"}), 404
         
-        # Build pandas DataFrame
-        df = pd.DataFrame(records)
-        # Capitalize columns to match original Name, Date, Time, Confidence
-        df.columns = [col.capitalize() for col in df.columns]
+        # Build pandas DataFrames
+        df_summary = pd.DataFrame(summary_list)
+        df_raw = pd.DataFrame(raw_list) if raw_list else pd.DataFrame(columns=["Name", "Class", "Period & Time", "Date", "Confidence"])
         
         # Save to buffer
         output = io.BytesIO()
         with pd.ExcelWriter(output, engine='openpyxl') as writer:
-            df.to_excel(writer, index=False, sheet_name='Attendance')
+            df_summary.to_excel(writer, index=False, sheet_name='Attendance Summary')
+            df_raw.to_excel(writer, index=False, sheet_name='Detailed Logs')
         output.seek(0)
         
         # Send the Excel file
         return send_file(
             output,
             as_attachment=True,
-            download_name=f"attendance_records_{get_indian_time().strftime('%Y%m%d_%H%M%S')}.xlsx",
+            download_name=f"attendance_summary_{get_indian_time().strftime('%Y%m%d_%H%M%S')}.xlsx",
             mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
         )
         
@@ -1046,16 +1217,22 @@ def download_attendance():
 def get_known_faces_list():
     """Get list of known faces"""
     try:
+        # Fetch registered people to get class name mapping
+        people_db = db.get_all_people()
+        name_to_class = {p["name"].lower(): p.get("class_name", "") for p in people_db}
+        
         people = []
         if os.path.exists(KNOWN_FACES_DIR):
             for filename in os.listdir(KNOWN_FACES_DIR):
                 if filename.endswith('.jpg') or filename.endswith('.png'):
                     filepath = os.path.join(KNOWN_FACES_DIR, filename)
                     stat = os.stat(filepath)
+                    name = filename.split('.')[0]
                     people.append({
-                        "name": filename.split('.')[0],
+                        "name": name,
                         "image_path": filename,
-                        "date_added": datetime.fromtimestamp(stat.st_ctime).isoformat()
+                        "date_added": datetime.fromtimestamp(stat.st_ctime).isoformat(),
+                        "class_name": name_to_class.get(name.lower(), "")
                     })
         
         return jsonify({"people": people, "count": len(people)})
@@ -1073,17 +1250,24 @@ def delete_person():
         if not name:
             return jsonify({"success": False, "message": "Name is required"}), 400
         
-        # Find and delete the image file
+        # Find and delete all matching image files (combined and legacy)
         deleted = False
         for filename in os.listdir(KNOWN_FACES_DIR):
-            if filename.startswith(name + '.') and (filename.endswith('.jpg') or filename.endswith('.png')):
+            if (filename.startswith(name + '.') or filename.startswith(name + '_')) and (filename.endswith('.jpg') or filename.endswith('.png')):
                 filepath = os.path.join(KNOWN_FACES_DIR, filename)
-                os.remove(filepath)
-                deleted = True
-                break
+                try:
+                    os.remove(filepath)
+                    deleted = True
+                except Exception as e:
+                    print(f"Error removing file {filepath}: {e}")
         
         if not deleted:
-            return jsonify({"success": False, "message": f"Person '{name}' not found"}), 404
+            # Check if name exists in database even if local file was missing, to clean up dangling entries
+            db.delete_person_db(name)
+            return jsonify({"success": True, "message": f"Dangling database record for '{name}' deleted successfully"})
+            
+        # Delete from persistent DB
+        db.delete_person_db(name)
         
         # Reload faces
         load_known_faces()
@@ -1330,8 +1514,10 @@ def api_recognize():
         data = request.json
         image_data = data.get('image')
         threshold = data.get('threshold', 0.45)
+        class_name = data.get('class_name', '').strip()
+        period = data.get('period', '').strip()
         
-        print("[VISION] Received /api/recognize request", flush=True)
+        print(f"[VISION] Received /api/recognize request for Class: {class_name}, Period: {period}", flush=True)
         
         if not image_data:
             return jsonify({"success": False, "message": "Image data is required"}), 400
@@ -1394,17 +1580,49 @@ def api_recognize():
                                     
                                     # Save attendance only if liveness is real
                                     if is_liveness_real:
-                                        print(f"[VISION] Ready to mark attendance for {name}. No cooldown.", flush=True)
-                                        success, db_msg = db.mark_attendance(name, rec_conf / 100.0)
+                                        print(f"[VISION] Ready to mark attendance for {name}. Class: {class_name}, Period: {period}", flush=True)
+                                        success, db_msg = db.mark_attendance(name, rec_conf / 100.0, class_name=class_name, period=period)
                                         print(f"[VISION] DB mark_attendance result: {success} - {db_msg}", flush=True)
+                                        
+                                        # Get actual registered class
+                                        logged_class = class_name
+                                        registered_class = None
+                                        if db.people_collection is not None:
+                                            try:
+                                                person = db.people_collection.find_one({"name": name})
+                                                if person:
+                                                    registered_class = person.get("class_name")
+                                            except:
+                                                pass
+                                        else:
+                                            try:
+                                                import sqlite3
+                                                conn = sqlite3.connect(db.sqlite_db_path)
+                                                cursor = conn.cursor()
+                                                cursor.execute("SELECT class_name FROM registered_people WHERE name = ?", (name,))
+                                                row = cursor.fetchone()
+                                                conn.close()
+                                                if row:
+                                                    registered_class = row[0]
+                                            except:
+                                                pass
+                                        if registered_class:
+                                            logged_class = registered_class
+                                            
                                         if success:
-                                            last_attendance[name] = get_indian_time()
+                                            cooldown_key = (name, class_name, period)
+                                            last_attendance[cooldown_key] = get_indian_time()
+                                            db_msg = f"Attendance marked successfully for {name} in class {logged_class} for {period}"
+                                        elif "already marked" in db_msg.lower() or "duplicate" in db_msg.lower():
+                                            db_msg = f"Attendance already marked for {name} in class {logged_class} for {period}"
                                     else:
                                         success = False
                                         db_msg = "Spoof Attempt Blocked: Printed photo/screen detected"
                                         print(f"[VISION] Spoof detected for {name}! Marking blocked.", flush=True)
+                                        logged_class = class_name
                                 else:
                                     db_msg = "Face not recognized above confidence threshold"
+                                    logged_class = class_name
                             
                             faces_detected.append({
                                 "name": name,
@@ -1413,7 +1631,9 @@ def api_recognize():
                                 "liveness": "passed" if is_liveness_real else "spoof_detected",
                                 "liveness_score": liveness_score,
                                 "attendance_marked": success,
-                                "attendance_message": db_msg
+                                "attendance_message": db_msg,
+                                "class_name": logged_class,
+                                "period": period
                             })
         else:
             return jsonify({"success": False, "message": "DNN model not loaded on server."}), 500
