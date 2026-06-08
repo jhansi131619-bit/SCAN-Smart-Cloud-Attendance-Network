@@ -101,15 +101,32 @@ email_settings = {
     "smtp_password": "",
     "sender_name": "SCAN Attendance System",
     "email_on_attendance": True,
-    "admin_email": ""
+    "admin_email": "",
+    "use_resend": False,
+    "resend_api_key": "",
+    "resend_sender": "onboarding@resend.dev"
 }
 
 # Priority 1: Load from environment variables (best for Render / cloud deployments)
+env_resend_api_key = os.getenv("RESEND_API_KEY", "")
+env_resend_sender = os.getenv("RESEND_SENDER", "onboarding@resend.dev")
 env_smtp_server = os.getenv("SMTP_SERVER", "")
 env_smtp_user = os.getenv("SMTP_USER", "")
 env_smtp_password = os.getenv("SMTP_PASSWORD", "")
-if env_smtp_server and env_smtp_user and env_smtp_password:
+
+if env_resend_api_key:
     email_settings.update({
+        "use_resend": True,
+        "resend_api_key": env_resend_api_key,
+        "resend_sender": env_resend_sender,
+        "sender_name": os.getenv("SMTP_SENDER_NAME", "SCAN Attendance System"),
+        "email_on_attendance": os.getenv("EMAIL_ON_ATTENDANCE", "true").lower() == "true",
+        "admin_email": os.getenv("ADMIN_EMAIL", "")
+    })
+    print("[EMAIL] Resend settings loaded from environment variables")
+elif env_smtp_server and env_smtp_user and env_smtp_password:
+    email_settings.update({
+        "use_resend": False,
         "smtp_server": env_smtp_server,
         "smtp_port": int(os.getenv("SMTP_PORT", "587")),
         "smtp_user": env_smtp_user,
@@ -124,17 +141,70 @@ elif os.path.exists(EMAIL_SETTINGS_FILE):
     try:
         with open(EMAIL_SETTINGS_FILE, 'r') as f:
             email_settings.update(json.load(f))
-        print("[EMAIL] SMTP settings loaded from email_settings.json")
+        print("[EMAIL] settings loaded from email_settings.json")
     except Exception as e:
         print(f"[EMAIL] Error loading email settings file: {e}")
 else:
-    print("[EMAIL] WARNING: No SMTP settings configured. Set SMTP_SERVER, SMTP_USER, SMTP_PASSWORD environment variables or configure via Settings page.")
+    print("[EMAIL] WARNING: No SMTP or Resend settings configured. Set RESEND_API_KEY / SMTP_SERVER environment variables or configure via Settings page.")
 
 def send_background_email(subject, recipient, body, attachment=None, attachment_name=None):
     """Send an email in a background thread"""
     import threading
     
     def run():
+        # 1. Try sending via Resend if configured
+        use_resend = email_settings.get("use_resend", False)
+        resend_api_key = email_settings.get("resend_api_key", "").strip()
+        resend_sender = email_settings.get("resend_sender", "onboarding@resend.dev").strip()
+        sender_name = email_settings.get("sender_name", "SCAN Attendance System").strip()
+        
+        if use_resend and resend_api_key:
+            import urllib.request
+            import urllib.error
+            import json
+            import base64
+            
+            try:
+                from_email = f"{sender_name} <{resend_sender}>" if "<" not in resend_sender else resend_sender
+                payload = {
+                    "from": from_email,
+                    "to": [recipient],
+                    "subject": subject,
+                    "html": body
+                }
+                
+                if attachment is not None:
+                    b64_content = base64.b64encode(attachment).decode('utf-8')
+                    payload["attachments"] = [{
+                        "content": b64_content,
+                        "filename": attachment_name or "attachment.xlsx"
+                    }]
+                
+                req = urllib.request.Request(
+                    "https://api.resend.com/emails",
+                    data=json.dumps(payload).encode('utf-8'),
+                    headers={
+                        "Authorization": f"Bearer {resend_api_key}",
+                        "Content-Type": "application/json"
+                    },
+                    method="POST"
+                )
+                
+                with urllib.request.urlopen(req, timeout=10) as response:
+                    res_body = response.read().decode('utf-8')
+                    print(f"[EMAIL] Successfully sent email via Resend to {recipient}: {res_body}")
+                return
+            except Exception as e:
+                err_msg = str(e)
+                if hasattr(e, 'read'):
+                    try:
+                        err_msg += f" - Response: {e.read().decode('utf-8')}"
+                    except:
+                        pass
+                print(f"[EMAIL] Error sending email via Resend to {recipient}: {err_msg}")
+                print("[EMAIL] Falling back to SMTP configuration...")
+
+        # 2. SMTP Flow (used if Resend is not selected or fails)
         import smtplib
         from email.mime.text import MIMEText
         from email.mime.multipart import MIMEMultipart
@@ -145,7 +215,6 @@ def send_background_email(subject, recipient, body, attachment=None, attachment_
         server_port = email_settings.get("smtp_port")
         user = email_settings.get("smtp_user")
         password = email_settings.get("smtp_password")
-        sender_name = email_settings.get("sender_name", "SCAN Attendance System")
         
         if not server_host or not user or not password:
             print("[EMAIL] SMTP settings not fully configured. Skipping mail send.")
@@ -1950,10 +2019,12 @@ def manage_email_settings():
     """Retrieve or update email server configuration settings"""
     if request.method == 'GET':
         try:
-            # Hide password for security
+            # Hide password and api keys for security
             settings_copy = email_settings.copy()
             if settings_copy.get("smtp_password"):
                 settings_copy["smtp_password"] = "********"
+            if settings_copy.get("resend_api_key"):
+                settings_copy["resend_api_key"] = "********"
             return jsonify({"status": "success", "settings": settings_copy})
         except Exception as e:
             return jsonify({"status": "error", "message": str(e)}), 500
@@ -1962,15 +2033,21 @@ def manage_email_settings():
         try:
             data = request.json or {}
             smtp_password = data.get("smtp_password", "")
+            resend_api_key = data.get("resend_api_key", "")
             
-            # If password is redacted placeholder, retain the existing saved password
+            # Retain existing credentials if redacted placeholders are provided
             if smtp_password == "********" or not smtp_password:
                 password_to_save = email_settings.get("smtp_password", "")
             else:
                 password_to_save = smtp_password
                 
+            if resend_api_key == "********" or not resend_api_key:
+                resend_api_key_to_save = email_settings.get("resend_api_key", "")
+            else:
+                resend_api_key_to_save = resend_api_key
+                
             smtp_server = data.get("smtp_server", "").strip()
-            if "@" in smtp_server:
+            if smtp_server and "@" in smtp_server:
                 return jsonify({"status": "error", "message": "SMTP Host / Server should be a domain name (like 'smtp.gmail.com'), not an email address."}), 400
                 
             email_settings.update({
@@ -1980,7 +2057,10 @@ def manage_email_settings():
                 "smtp_password": password_to_save,
                 "sender_name": data.get("sender_name", "").strip() or "SCAN Attendance System",
                 "email_on_attendance": bool(data.get("email_on_attendance", True)),
-                "admin_email": data.get("admin_email", "").strip()
+                "admin_email": data.get("admin_email", "").strip(),
+                "use_resend": bool(data.get("use_resend", False)),
+                "resend_api_key": resend_api_key_to_save.strip(),
+                "resend_sender": data.get("resend_sender", "").strip() or "onboarding@resend.dev"
             })
             
             # Save settings persistently on disk
@@ -1993,7 +2073,7 @@ def manage_email_settings():
 
 @app.route('/api/email/test', methods=['POST'])
 def send_test_email():
-    """Verify SMTP credentials by sending a test email synchronously"""
+    """Verify email configuration by sending a test email synchronously"""
     try:
         data = request.json or {}
         recipient = data.get("recipient", "").strip()
@@ -2002,16 +2082,16 @@ def send_test_email():
         if not recipient:
             return jsonify({"status": "error", "message": "Recipient email is required"}), 400
             
-        subject = "SCAN SMTP Connection Test"
+        subject = "SCAN Email Connection Test"
         body = """
         <div style="font-family: Arial, sans-serif; max-width: 600px; margin: auto; border: 1px solid #cbd5e1; border-radius: 8px; padding: 24px; text-align: center; box-shadow: 0 4px 12px rgba(0,0,0,0.05);">
             <div style="background-color: #2563EB; color: white; padding: 15px; border-radius: 6px 6px 0 0;">
                 <h2 style="margin: 0; font-size: 20px;">Connection Test</h2>
             </div>
             <div style="padding: 20px; color: #334155; line-height: 1.6;">
-                <h3 style="color: #16A34A; margin-top: 0;">SMTP Test Successful! 🎉</h3>
-                <p>Your SCAN Face Recognition Attendance System has successfully connected to this SMTP server.</p>
-                <p>All automated notifications and reports are ready to be dispatched.</p>
+                <h3 style="color: #16A34A; margin-top: 0;">Email Test Successful! 🎉</h3>
+                <p>Your SCAN Face Recognition Attendance System has successfully connected and dispatched this email.</p>
+                <p>All automated notifications and reports are ready to be sent.</p>
             </div>
             <hr style="border: none; border-top: 1px solid #e2e8f0; margin: 20px 0;" />
             <p style="color: #64748b; font-size: 12px; margin-bottom: 0;">
@@ -2020,6 +2100,51 @@ def send_test_email():
         </div>
         """
         
+        use_resend = email_settings.get("use_resend", False)
+        resend_api_key = email_settings.get("resend_api_key", "").strip()
+        resend_sender = email_settings.get("resend_sender", "onboarding@resend.dev").strip()
+        sender_name = email_settings.get("sender_name", "SCAN Attendance System").strip()
+        
+        if use_resend:
+            if not resend_api_key:
+                return jsonify({"status": "error", "message": "Resend API Key is missing"}), 400
+                
+            import urllib.request
+            import urllib.error
+            import json
+            
+            try:
+                from_email = f"{sender_name} <{resend_sender}>" if "<" not in resend_sender else resend_sender
+                payload = {
+                    "from": from_email,
+                    "to": [recipient],
+                    "subject": subject,
+                    "html": body
+                }
+                
+                req = urllib.request.Request(
+                    "https://api.resend.com/emails",
+                    data=json.dumps(payload).encode('utf-8'),
+                    headers={
+                        "Authorization": f"Bearer {resend_api_key}",
+                        "Content-Type": "application/json"
+                    },
+                    method="POST"
+                )
+                
+                with urllib.request.urlopen(req, timeout=10) as response:
+                    res_body = json.loads(response.read().decode('utf-8'))
+                return jsonify({"status": "success", "message": f"Test email sent successfully via Resend to {recipient}", "data": res_body})
+            except Exception as e:
+                err_msg = str(e)
+                if hasattr(e, 'read'):
+                    try:
+                        err_msg += f" - Response: {e.read().decode('utf-8')}"
+                    except:
+                        pass
+                return jsonify({"status": "error", "message": f"Resend API connection failed: {err_msg}"}), 500
+        
+        # SMTP configuration
         import smtplib
         from email.mime.text import MIMEText
         from email.mime.multipart import MIMEMultipart
@@ -2028,7 +2153,6 @@ def send_test_email():
         server_port = email_settings.get("smtp_port")
         user = email_settings.get("smtp_user")
         password = email_settings.get("smtp_password")
-        sender_name = email_settings.get("sender_name", "SCAN Attendance System")
         
         if not server_host or not user or not password:
             return jsonify({"status": "error", "message": "SMTP settings are incomplete"}), 400
@@ -2049,7 +2173,7 @@ def send_test_email():
         server.sendmail(user, recipient, msg.as_string())
         server.quit()
         
-        return jsonify({"status": "success", "message": f"Test email successfully sent to {recipient}"})
+        return jsonify({"status": "success", "message": f"Test email successfully sent via SMTP to {recipient}"})
     except Exception as e:
         return jsonify({"status": "error", "message": f"SMTP connection failed: {str(e)}"}), 500
 

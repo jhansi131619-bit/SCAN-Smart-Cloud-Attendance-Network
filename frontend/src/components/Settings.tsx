@@ -113,7 +113,10 @@ function Settings() {
     smtp_password: '',
     sender_name: 'SCAN Attendance System',
     email_on_attendance: false,
-    admin_email: ''
+    admin_email: '',
+    use_resend: false,
+    resend_api_key: '',
+    resend_sender: 'onboarding@resend.dev'
   });
   const [emailSettingsLoading, setEmailSettingsLoading] = useState(false);
   const [testEmailLoading, setTestEmailLoading] = useState(false);
@@ -667,12 +670,12 @@ function Settings() {
             </CardContent>
           </Card>
 
-        {/* SMTP Email Settings */}
+        {/* Email Settings */}
         <Card sx={{ gridColumn: { md: 'span 2' } }}>
           <CardContent>
             <Typography variant="h6" gutterBottom sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
               <Notifications color="primary" />
-              SMTP Email Notifications Configuration
+              Email Notifications Configuration
             </Typography>
             <Divider sx={{ mb: 3 }} />
             
@@ -682,58 +685,115 @@ function Settings() {
               </Box>
             ) : (
               <Stack spacing={3}>
-                <Box sx={{ display: 'grid', gridTemplateColumns: { xs: '1fr', sm: '2fr 1fr' }, gap: 2 }}>
-                  <TextField
-                    label="SMTP Host / Server"
-                    placeholder="e.g. smtp.gmail.com"
-                    value={emailSettings.smtp_server}
-                    onChange={(e) => setEmailSettings(prev => ({ ...prev, smtp_server: e.target.value }))}
-                    fullWidth
-                  />
-                  <TextField
-                    label="SMTP Port"
-                    type="number"
-                    placeholder="e.g. 587"
-                    value={emailSettings.smtp_port}
-                    onChange={(e) => setEmailSettings(prev => ({ ...prev, smtp_port: parseInt(e.target.value) || 587 }))}
-                    fullWidth
-                  />
-                </Box>
-                
-                <Box sx={{ display: 'grid', gridTemplateColumns: { xs: '1fr', sm: '1fr 1fr' }, gap: 2 }}>
-                  <TextField
-                    label="SMTP Username / User Email"
-                    placeholder="e.g. your-email@gmail.com"
-                    value={emailSettings.smtp_user}
-                    onChange={(e) => setEmailSettings(prev => ({ ...prev, smtp_user: e.target.value }))}
-                    fullWidth
-                  />
-                  <TextField
-                    label="SMTP Password / App Password"
-                    type="password"
-                    placeholder="Enter password or app password"
-                    value={emailSettings.smtp_password}
-                    onChange={(e) => setEmailSettings(prev => ({ ...prev, smtp_password: e.target.value }))}
-                    fullWidth
-                  />
-                </Box>
+                <FormControl fullWidth>
+                  <InputLabel id="email-method-label">Email Dispatch Method</InputLabel>
+                  <Select
+                    labelId="email-method-label"
+                    value={emailSettings.use_resend ? 'resend' : 'smtp'}
+                    label="Email Dispatch Method"
+                    onChange={(e) => setEmailSettings(prev => ({ ...prev, use_resend: e.target.value === 'resend' }))}
+                  >
+                    <MenuItem value="smtp">Standard SMTP Server (Gmail, Custom SMTP)</MenuItem>
+                    <MenuItem value="resend">Resend HTTP API (Recommended for Render free tier)</MenuItem>
+                  </Select>
+                </FormControl>
 
-                <Box sx={{ display: 'grid', gridTemplateColumns: { xs: '1fr', sm: '1fr 1fr' }, gap: 2 }}>
-                  <TextField
-                    label="Sender Display Name"
-                    placeholder="e.g. SCAN Attendance System"
-                    value={emailSettings.sender_name}
-                    onChange={(e) => setEmailSettings(prev => ({ ...prev, sender_name: e.target.value }))}
-                    fullWidth
-                  />
-                  <TextField
-                    label="Admin Recipient Email"
-                    placeholder="e.g. admin@school.com"
-                    value={emailSettings.admin_email}
-                    onChange={(e) => setEmailSettings(prev => ({ ...prev, admin_email: e.target.value }))}
-                    fullWidth
-                  />
-                </Box>
+                {emailSettings.use_resend ? (
+                  /* Resend Config */
+                  <Stack spacing={3}>
+                    <Box sx={{ display: 'grid', gridTemplateColumns: { xs: '1fr', sm: '1fr 1fr' }, gap: 2 }}>
+                      <TextField
+                        label="Resend API Key"
+                        type="password"
+                        placeholder="Enter your re_... API Key"
+                        value={emailSettings.resend_api_key}
+                        onChange={(e) => setEmailSettings(prev => ({ ...prev, resend_api_key: e.target.value }))}
+                        fullWidth
+                      />
+                      <TextField
+                        label="Verified Resend Sender Email"
+                        placeholder="e.g. onboarding@resend.dev"
+                        value={emailSettings.resend_sender}
+                        onChange={(e) => setEmailSettings(prev => ({ ...prev, resend_sender: e.target.value }))}
+                        helperText="Use 'onboarding@resend.dev' for testing before verifying your domain."
+                        fullWidth
+                      />
+                    </Box>
+                    
+                    <Box sx={{ display: 'grid', gridTemplateColumns: { xs: '1fr', sm: '1fr 1fr' }, gap: 2 }}>
+                      <TextField
+                        label="Sender Display Name"
+                        placeholder="e.g. SCAN Attendance System"
+                        value={emailSettings.sender_name}
+                        onChange={(e) => setEmailSettings(prev => ({ ...prev, sender_name: e.target.value }))}
+                        fullWidth
+                      />
+                      <TextField
+                        label="Admin Recipient Email"
+                        placeholder="e.g. admin@school.com"
+                        value={emailSettings.admin_email}
+                        onChange={(e) => setEmailSettings(prev => ({ ...prev, admin_email: e.target.value }))}
+                        fullWidth
+                      />
+                    </Box>
+                  </Stack>
+                ) : (
+                  /* SMTP Config */
+                  <Stack spacing={3}>
+                    <Box sx={{ display: 'grid', gridTemplateColumns: { xs: '1fr', sm: '2fr 1fr' }, gap: 2 }}>
+                      <TextField
+                        label="SMTP Host / Server"
+                        placeholder="e.g. smtp.gmail.com"
+                        value={emailSettings.smtp_server}
+                        onChange={(e) => setEmailSettings(prev => ({ ...prev, smtp_server: e.target.value }))}
+                        fullWidth
+                      />
+                      <TextField
+                        label="SMTP Port"
+                        type="number"
+                        placeholder="e.g. 587"
+                        value={emailSettings.smtp_port}
+                        onChange={(e) => setEmailSettings(prev => ({ ...prev, smtp_port: parseInt(e.target.value) || 587 }))}
+                        fullWidth
+                      />
+                    </Box>
+                    
+                    <Box sx={{ display: 'grid', gridTemplateColumns: { xs: '1fr', sm: '1fr 1fr' }, gap: 2 }}>
+                      <TextField
+                        label="SMTP Username / User Email"
+                        placeholder="e.g. your-email@gmail.com"
+                        value={emailSettings.smtp_user}
+                        onChange={(e) => setEmailSettings(prev => ({ ...prev, smtp_user: e.target.value }))}
+                        fullWidth
+                      />
+                      <TextField
+                        label="SMTP Password / App Password"
+                        type="password"
+                        placeholder="Enter password or app password"
+                        value={emailSettings.smtp_password}
+                        onChange={(e) => setEmailSettings(prev => ({ ...prev, smtp_password: e.target.value }))}
+                        fullWidth
+                      />
+                    </Box>
+                    
+                    <Box sx={{ display: 'grid', gridTemplateColumns: { xs: '1fr', sm: '1fr 1fr' }, gap: 2 }}>
+                      <TextField
+                        label="Sender Display Name"
+                        placeholder="e.g. SCAN Attendance System"
+                        value={emailSettings.sender_name}
+                        onChange={(e) => setEmailSettings(prev => ({ ...prev, sender_name: e.target.value }))}
+                        fullWidth
+                      />
+                      <TextField
+                        label="Admin Recipient Email"
+                        placeholder="e.g. admin@school.com"
+                        value={emailSettings.admin_email}
+                        onChange={(e) => setEmailSettings(prev => ({ ...prev, admin_email: e.target.value }))}
+                        fullWidth
+                      />
+                    </Box>
+                  </Stack>
+                )}
 
                 <FormControlLabel
                   control={
@@ -766,7 +826,7 @@ function Settings() {
                       disabled={testEmailLoading || !testEmailRecipient.trim()}
                       sx={{ py: 1 }}
                     >
-                      {testEmailLoading ? 'Testing...' : 'Test SMTP'}
+                      {testEmailLoading ? 'Testing...' : 'Test Connection'}
                     </Button>
                   </Box>
                   
