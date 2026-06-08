@@ -92,6 +92,219 @@ else:
 # Get port from environment variable or use default
 PORT = int(os.getenv('PORT', 5000))
 
+# Email Settings Configuration
+EMAIL_SETTINGS_FILE = '/app/email_settings.json' if os.path.exists('/app/known_faces') else os.path.join(os.path.dirname(__file__), 'email_settings.json')
+email_settings = {
+    "smtp_server": "",
+    "smtp_port": 587,
+    "smtp_user": "",
+    "smtp_password": "",
+    "sender_name": "SCAN Attendance System",
+    "email_on_attendance": True,
+    "admin_email": ""
+}
+if os.path.exists(EMAIL_SETTINGS_FILE):
+    try:
+        with open(EMAIL_SETTINGS_FILE, 'r') as f:
+            email_settings.update(json.load(f))
+        print("Email settings loaded successfully")
+    except Exception as e:
+        print(f"Error loading email settings: {e}")
+
+def send_background_email(subject, recipient, body, attachment=None, attachment_name=None):
+    """Send an email in a background thread"""
+    import threading
+    
+    def run():
+        import smtplib
+        from email.mime.text import MIMEText
+        from email.mime.multipart import MIMEMultipart
+        from email.mime.base import MIMEBase
+        from email import encoders
+        
+        server_host = email_settings.get("smtp_server")
+        server_port = email_settings.get("smtp_port")
+        user = email_settings.get("smtp_user")
+        password = email_settings.get("smtp_password")
+        sender_name = email_settings.get("sender_name", "SCAN Attendance System")
+        
+        if not server_host or not user or not password:
+            print("[EMAIL] SMTP settings not fully configured. Skipping mail send.")
+            return
+            
+        try:
+            msg = MIMEMultipart()
+            msg['From'] = f"{sender_name} <{user}>"
+            msg['To'] = recipient
+            msg['Subject'] = subject
+            
+            msg.attach(MIMEText(body, 'html'))
+            
+            if attachment is not None:
+                part = MIMEBase('application', 'octet-stream')
+                part.set_payload(attachment)
+                encoders.encode_base64(part)
+                part.add_header(
+                    'Content-Disposition',
+                    f'attachment; filename="{attachment_name}"',
+                )
+                msg.attach(part)
+                
+            if int(server_port) == 465:
+                server = smtplib.SMTP_SSL(server_host, int(server_port), timeout=10)
+            else:
+                server = smtplib.SMTP(server_host, int(server_port), timeout=10)
+                server.starttls()
+                
+            server.login(user, password)
+            server.sendmail(user, recipient, msg.as_string())
+            server.quit()
+            print(f"[EMAIL] Successfully sent email to {recipient}")
+        except Exception as e:
+            print(f"[EMAIL] Error sending email to {recipient}: {e}")
+            
+    threading.Thread(target=run).start()
+
+def send_attendance_notification_email(student_name, class_name, period, time_val, date_val, confidence):
+    """Sends an attendance confirmation email if enabled and email exists"""
+    if not email_settings.get("email_on_attendance"):
+        return
+        
+    student_email = db.get_student_email(student_name)
+    
+    # Also fetch parent_email
+    parent_email = ""
+    if db.people_collection is not None:
+        try:
+            person = db.people_collection.find_one({"name": {"$regex": f"^{student_name}$", "$options": "i"}})
+            if person:
+                parent_email = person.get("parent_email", "")
+        except:
+            pass
+    else:
+        try:
+            import sqlite3
+            conn = sqlite3.connect(db.sqlite_db_path)
+            cursor = conn.cursor()
+            cursor.execute("SELECT parent_email FROM registered_people WHERE name = ? COLLATE NOCASE", (student_name,))
+            row = cursor.fetchone()
+            conn.close()
+            if row:
+                parent_email = row[0] or ""
+        except:
+            pass
+
+    if not student_email and not parent_email:
+        print(f"[EMAIL] No email registered for student '{student_name}' or parent. Skipping notification.")
+        return
+        
+    # Auto-resolve class_name if not provided
+    resolved_class = class_name
+    if not resolved_class:
+        if db.people_collection is not None:
+            try:
+                person = db.people_collection.find_one({"name": {"$regex": f"^{student_name}$", "$options": "i"}})
+                if person:
+                    resolved_class = person.get("class_name", "")
+            except:
+                pass
+        else:
+            try:
+                import sqlite3
+                conn = sqlite3.connect(db.sqlite_db_path)
+                cursor = conn.cursor()
+                cursor.execute("SELECT class_name FROM registered_people WHERE name = ? COLLATE NOCASE", (student_name,))
+                row = cursor.fetchone()
+                conn.close()
+                if row:
+                    resolved_class = row[0] or ""
+            except:
+                pass
+
+    conf_pct = round(confidence * 100) if confidence <= 1.0 else round(confidence)
+
+    # 1. Send present email to student if registered
+    if student_email:
+        subject = f"SCAN Attendance Marked - {student_name}"
+        body = f"""
+        <div style="font-family: Arial, sans-serif; max-width: 600px; margin: auto; border: 1px solid #e2e8f0; border-radius: 8px; overflow: hidden; box-shadow: 0 4px 6px rgba(0,0,0,0.05);">
+            <div style="background-color: #2563EB; color: white; padding: 20px; text-align: center;">
+                <h2 style="margin: 0; font-size: 24px;">SCAN Attendance Alert</h2>
+                <p style="margin: 5px 0 0 0; opacity: 0.9;">Smart Cloud Attendance Network</p>
+            </div>
+            <div style="padding: 24px; color: #334155; line-height: 1.6;">
+                <p>Hello <strong>{student_name}</strong>,</p>
+                <p>Your attendance has been successfully marked today.</p>
+                <div style="background-color: #f8fafc; border: 1px solid #f1f5f9; border-radius: 6px; padding: 16px; margin: 20px 0;">
+                    <table style="width: 100%; border-collapse: collapse;">
+                        <tr>
+                            <td style="padding: 6px 0; color: #64748b; font-weight: bold; width: 120px;">Class:</td>
+                            <td style="padding: 6px 0; color: #0f172a;">{resolved_class or 'N/A'}</td>
+                        </tr>
+                        <tr>
+                            <td style="padding: 6px 0; color: #64748b; font-weight: bold;">Period:</td>
+                            <td style="padding: 6px 0; color: #0f172a;">{period or 'N/A'}</td>
+                        </tr>
+                        <tr>
+                            <td style="padding: 6px 0; color: #64748b; font-weight: bold;">Date & Time:</td>
+                            <td style="padding: 6px 0; color: #0f172a;">{date_val} at {time_val}</td>
+                        </tr>
+                        <tr>
+                            <td style="padding: 6px 0; color: #64748b; font-weight: bold;">Confidence:</td>
+                            <td style="padding: 6px 0; color: #0f172a;">{conf_pct}%</td>
+                        </tr>
+                    </table>
+                </div>
+                <p>If you did not mark your attendance, please contact your administrator immediately.</p>
+            </div>
+            <div style="background-color: #f1f5f9; color: #94a3b8; padding: 12px; text-align: center; font-size: 12px;">
+                This is an automated notification from the SCAN Platform.
+            </div>
+        </div>
+        """
+        send_background_email(subject, student_email, body)
+
+    # 2. Send present email to parent if registered
+    if parent_email:
+        parent_subject = f"SCAN Attendance Marked Alert (Present) - {student_name}"
+        parent_body = f"""
+        <div style="font-family: Arial, sans-serif; max-width: 600px; margin: auto; border: 1px solid #e2e8f0; border-radius: 8px; overflow: hidden; box-shadow: 0 4px 6px rgba(0,0,0,0.05);">
+            <div style="background-color: #10B981; color: white; padding: 20px; text-align: center;">
+                <h2 style="margin: 0; font-size: 24px;">SCAN Attendance Alert</h2>
+                <p style="margin: 5px 0 0 0; opacity: 0.9;">Smart Cloud Attendance Network</p>
+            </div>
+            <div style="padding: 24px; color: #334155; line-height: 1.6;">
+                <p>Dear Parent / Guardian,</p>
+                <p>This is to inform you that your ward, <strong>{student_name}</strong>, has been successfully marked <strong>PRESENT</strong> today.</p>
+                <div style="background-color: #f8fafc; border: 1px solid #f1f5f9; border-radius: 6px; padding: 16px; margin: 20px 0;">
+                    <table style="width: 100%; border-collapse: collapse;">
+                        <tr>
+                            <td style="padding: 6px 0; color: #64748b; font-weight: bold; width: 120px;">Class:</td>
+                            <td style="padding: 6px 0; color: #0f172a;">{resolved_class or 'N/A'}</td>
+                        </tr>
+                        <tr>
+                            <td style="padding: 6px 0; color: #64748b; font-weight: bold;">Period:</td>
+                            <td style="padding: 6px 0; color: #0f172a;">{period or 'N/A'}</td>
+                        </tr>
+                        <tr>
+                            <td style="padding: 6px 0; color: #64748b; font-weight: bold;">Date & Time:</td>
+                            <td style="padding: 6px 0; color: #0f172a;">{date_val} at {time_val}</td>
+                        </tr>
+                        <tr>
+                            <td style="padding: 6px 0; color: #64748b; font-weight: bold;">Status:</td>
+                            <td style="padding: 6px 0; color: #10B981; font-weight: bold;">PRESENT</td>
+                        </tr>
+                    </table>
+                </div>
+                <p>If you did not expect your ward to be present or have any questions, please contact the school administration.</p>
+            </div>
+            <div style="background-color: #f1f5f9; color: #94a3b8; padding: 12px; text-align: center; font-size: 12px;">
+                This is an automated notification from the SCAN Platform.
+            </div>
+        </div>
+        """
+        send_background_email(parent_subject, parent_email, parent_body)
+
 print("Configuration loaded")
 
 # Initialize face detector
@@ -591,7 +804,7 @@ def serve_image(filename):
     except Exception as e:
         return jsonify({"error": f"Error serving image: {str(e)}"}), 500
 
-def save_and_process_registration(name, image, angle, class_name=None):
+def save_and_process_registration(name, image, angle, class_name=None, email=None, parent_email=None):
     """
     Handles saving the registered face image. If an angle is provided for multi-angle registration,
     buffers the images in memory and stitches them into a single horizontal strip on the 5th capture step.
@@ -616,7 +829,7 @@ def save_and_process_registration(name, image, angle, class_name=None):
         try:
             _, img_buffer = cv2.imencode('.jpg', image)
             img_b64 = base64.b64encode(img_buffer).decode('utf-8')
-            db.save_person(name, img_b64, class_name)
+            db.save_person(name, img_b64, class_name, email, parent_email)
         except Exception as db_err:
             print(f"[DB] Error saving person to database during registration: {db_err}")
             
@@ -674,7 +887,7 @@ def save_and_process_registration(name, image, angle, class_name=None):
         try:
             _, img_buffer = cv2.imencode('.jpg', combined_image)
             img_b64 = base64.b64encode(img_buffer).decode('utf-8')
-            db.save_person(name, img_b64, class_name)
+            db.save_person(name, img_b64, class_name, email, parent_email)
         except Exception as db_err:
             print(f"[DB] Error saving stitched person to database during registration: {db_err}")
             
@@ -710,8 +923,10 @@ def add_person():
         image_data = data.get('image')
         angle = data.get('angle', '').strip()
         class_name = data.get('class_name', '').strip()
+        email = data.get('email', '').strip()
+        parent_email = data.get('parent_email', '').strip()
         
-        print(f"Add person request received - Name: {name}, Angle: {angle}, Class: {class_name}")
+        print(f"Add person request received - Name: {name}, Angle: {angle}, Class: {class_name}, Email: {email}, Parent Email: {parent_email}")
         
         if not name or not image_data:
             return jsonify({"success": False, "message": "Name and image are required"}), 400
@@ -744,7 +959,7 @@ def add_person():
             return jsonify({"success": False, "message": "No face detected in the image. Please make sure your face is clearly visible."}), 400
         
         # Process and save via helper function
-        resp, status_code = save_and_process_registration(name, image, angle, class_name)
+        resp, status_code = save_and_process_registration(name, image, angle, class_name, email, parent_email)
         return jsonify(resp), status_code
         
     except Exception as e:
@@ -760,8 +975,10 @@ def add_person_backend():
         name = data.get('name', '').strip()
         angle = data.get('angle', '').strip()
         class_name = data.get('class_name', '').strip()
+        email = data.get('email', '').strip()
+        parent_email = data.get('parent_email', '').strip()
         
-        print(f"Add person backend request received - Name: {name}, Angle: {angle}, Class: {class_name}")
+        print(f"Add person backend request received - Name: {name}, Angle: {angle}, Class: {class_name}, Email: {email}, Parent Email: {parent_email}")
         
         if not name:
             return jsonify({"success": False, "message": "Name is required"}), 400
@@ -810,7 +1027,7 @@ def add_person_backend():
             return jsonify({"success": False, "message": "No face detected in backend camera view. Please make sure you are in front of the camera and looking directly at it."}), 400
         
         # Process and save via helper function
-        resp, status_code = save_and_process_registration(name, image, angle, class_name)
+        resp, status_code = save_and_process_registration(name, image, angle, class_name, email, parent_email)
         return jsonify(resp), status_code
         
     except Exception as e:
@@ -967,9 +1184,33 @@ def mark_attendance():
             recognized_name = known_names[match_idx]
             print(f"Person recognized: {recognized_name} with confidence: {confidence_score}")
             
-            # Check local memory cooldown first
+            # Retrieve the student's registered class (case-insensitive lookup)
+            registered_class = None
+            if db.people_collection is not None:
+                try:
+                    person = db.people_collection.find_one({"name": {"$regex": f"^{recognized_name}$", "$options": "i"}})
+                    if person:
+                        registered_class = person.get("class_name")
+                except:
+                    pass
+            else:
+                try:
+                    import sqlite3
+                    conn = sqlite3.connect(db.sqlite_db_path)
+                    cursor = conn.cursor()
+                    cursor.execute("SELECT class_name FROM registered_people WHERE name = ? COLLATE NOCASE", (recognized_name,))
+                    row = cursor.fetchone()
+                    conn.close()
+                    if row:
+                        registered_class = row[0]
+                except:
+                    pass
+
+            logged_class = registered_class if registered_class else (class_name or "")
+
+            # Check local memory cooldown first, using the resolved logged_class
             current_time = get_indian_time()
-            cooldown_key = (recognized_name, class_name, period)
+            cooldown_key = (recognized_name, logged_class, period)
             last_time = last_attendance.get(cooldown_key)
             
             allow_multiple = os.getenv("ALLOW_MULTIPLE_ATTENDANCE", "true").lower() == "true"
@@ -986,36 +1227,23 @@ def mark_attendance():
                     "face_rect": {"x": int(x), "y": int(y), "w": int(w), "h": int(h)}
                 })
             
-            # Save attendance to DB and get detailed response
-            success, db_msg = db.mark_attendance(recognized_name, confidence_score, class_name=class_name, period=period)
+            # Save attendance to DB and get detailed response using logged_class
+            success, db_msg = db.mark_attendance(recognized_name, confidence_score, class_name=logged_class, period=period)
             
-            # Get actual registered class
-            logged_class = class_name
-            registered_class = None
-            if db.people_collection is not None:
-                try:
-                    person = db.people_collection.find_one({"name": recognized_name})
-                    if person:
-                        registered_class = person.get("class_name")
-                except:
-                    pass
-            else:
-                try:
-                    import sqlite3
-                    conn = sqlite3.connect(db.sqlite_db_path)
-                    cursor = conn.cursor()
-                    cursor.execute("SELECT class_name FROM registered_people WHERE name = ?", (recognized_name,))
-                    row = cursor.fetchone()
-                    conn.close()
-                    if row:
-                        registered_class = row[0]
-                except:
-                    pass
-            if registered_class:
-                logged_class = registered_class
-
             if success:
                 last_attendance[cooldown_key] = current_time
+                # Send email notification in background thread if configured
+                try:
+                    send_attendance_notification_email(
+                        recognized_name,
+                        logged_class,
+                        period,
+                        current_time.strftime("%H:%M:%S"),
+                        current_time.strftime("%Y-%m-%d"),
+                        confidence_score
+                    )
+                except Exception as mail_err:
+                    print(f"[EMAIL] Failed to queue attendance email: {mail_err}")
                 return jsonify({
                     "success": True,
                     "name": recognized_name,
@@ -1220,6 +1448,8 @@ def get_known_faces_list():
         # Fetch registered people to get class name mapping
         people_db = db.get_all_people()
         name_to_class = {p["name"].lower(): p.get("class_name", "") for p in people_db}
+        name_to_email = {p["name"].lower(): p.get("email", "") for p in people_db}
+        name_to_parent_email = {p["name"].lower(): p.get("parent_email", "") for p in people_db}
         
         people = []
         if os.path.exists(KNOWN_FACES_DIR):
@@ -1232,7 +1462,9 @@ def get_known_faces_list():
                         "name": name,
                         "image_path": filename,
                         "date_added": datetime.fromtimestamp(stat.st_ctime).isoformat(),
-                        "class_name": name_to_class.get(name.lower(), "")
+                        "class_name": name_to_class.get(name.lower(), ""),
+                        "email": name_to_email.get(name.lower(), ""),
+                        "parent_email": name_to_parent_email.get(name.lower(), "")
                     })
         
         return jsonify({"people": people, "count": len(people)})
@@ -1426,6 +1658,19 @@ def generate_frames(threshold=0.45):
                                         "audio": "attendance_marked"
                                     })
                                     print(f"[VISION] Attendance marked: {name} ({confidence}%)", flush=True)
+                                    # Send email notification in background thread if configured
+                                    try:
+                                        now_time = get_indian_time()
+                                        send_attendance_notification_email(
+                                            name,
+                                            None,
+                                            None,
+                                            now_time.strftime("%H:%M:%S"),
+                                            now_time.strftime("%Y-%m-%d"),
+                                            float(confidence) / 100.0
+                                        )
+                                    except Exception as mail_err:
+                                        print(f"[EMAIL] Failed to queue stream attendance email: {mail_err}")
                                 else:
                                     if "already marked" in db_msg.lower() or "duplicate" in db_msg.lower():
                                         last_scanned_status.update({
@@ -1578,48 +1823,59 @@ def api_recognize():
                                     face_distance = 1.0 - conf_score
                                     rec_conf = round((1 - face_distance) * 100)
                                     
+                                    # Retrieve the student's registered class (case-insensitive lookup)
+                                    registered_class = None
+                                    if db.people_collection is not None:
+                                        try:
+                                            person = db.people_collection.find_one({"name": {"$regex": f"^{name}$", "$options": "i"}})
+                                            if person:
+                                                registered_class = person.get("class_name")
+                                        except:
+                                            pass
+                                    else:
+                                        try:
+                                            import sqlite3
+                                            conn = sqlite3.connect(db.sqlite_db_path)
+                                            cursor = conn.cursor()
+                                            cursor.execute("SELECT class_name FROM registered_people WHERE name = ? COLLATE NOCASE", (name,))
+                                            row = cursor.fetchone()
+                                            conn.close()
+                                            if row:
+                                                registered_class = row[0]
+                                        except:
+                                            pass
+                                    
+                                    logged_class = registered_class if registered_class else (class_name or "")
+                                    
                                     # Save attendance only if liveness is real
                                     if is_liveness_real:
-                                        print(f"[VISION] Ready to mark attendance for {name}. Class: {class_name}, Period: {period}", flush=True)
-                                        success, db_msg = db.mark_attendance(name, rec_conf / 100.0, class_name=class_name, period=period)
+                                        print(f"[VISION] Ready to mark attendance for {name}. Class: {logged_class}, Period: {period}", flush=True)
+                                        success, db_msg = db.mark_attendance(name, rec_conf / 100.0, class_name=logged_class, period=period)
                                         print(f"[VISION] DB mark_attendance result: {success} - {db_msg}", flush=True)
                                         
-                                        # Get actual registered class
-                                        logged_class = class_name
-                                        registered_class = None
-                                        if db.people_collection is not None:
-                                            try:
-                                                person = db.people_collection.find_one({"name": name})
-                                                if person:
-                                                    registered_class = person.get("class_name")
-                                            except:
-                                                pass
-                                        else:
-                                            try:
-                                                import sqlite3
-                                                conn = sqlite3.connect(db.sqlite_db_path)
-                                                cursor = conn.cursor()
-                                                cursor.execute("SELECT class_name FROM registered_people WHERE name = ?", (name,))
-                                                row = cursor.fetchone()
-                                                conn.close()
-                                                if row:
-                                                    registered_class = row[0]
-                                            except:
-                                                pass
-                                        if registered_class:
-                                            logged_class = registered_class
-                                            
                                         if success:
-                                            cooldown_key = (name, class_name, period)
-                                            last_attendance[cooldown_key] = get_indian_time()
+                                            cooldown_key = (name, logged_class, period)
+                                            now_time = get_indian_time()
+                                            last_attendance[cooldown_key] = now_time
                                             db_msg = f"Attendance marked successfully for {name} in class {logged_class} for {period}"
+                                            # Send email notification in background thread if configured
+                                            try:
+                                                send_attendance_notification_email(
+                                                    name,
+                                                    logged_class,
+                                                    period,
+                                                    now_time.strftime("%H:%M:%S"),
+                                                    now_time.strftime("%Y-%m-%d"),
+                                                    rec_conf / 100.0
+                                                )
+                                            except Exception as mail_err:
+                                                print(f"[EMAIL] Failed to queue attendance email: {mail_err}")
                                         elif "already marked" in db_msg.lower() or "duplicate" in db_msg.lower():
                                             db_msg = f"Attendance already marked for {name} in class {logged_class} for {period}"
                                     else:
                                         success = False
                                         db_msg = "Spoof Attempt Blocked: Printed photo/screen detected"
                                         print(f"[VISION] Spoof detected for {name}! Marking blocked.", flush=True)
-                                        logged_class = class_name
                                 else:
                                     db_msg = "Face not recognized above confidence threshold"
                                     logged_class = class_name
@@ -1648,6 +1904,414 @@ def api_recognize():
         import traceback
         traceback.print_exc()
         return jsonify({"success": False, "message": f"Error recognizing: {str(e)}"}), 500
+
+@app.route('/api/update-person', methods=['POST'])
+def update_person_api():
+    """Update a registered person's profile details (class, email)"""
+    try:
+        data = request.json or {}
+        name = data.get('name', '').strip()
+        class_name = data.get('class_name', '').strip()
+        email = data.get('email', '').strip()
+        parent_email = data.get('parent_email', '').strip()
+        
+        if not name:
+            return jsonify({"status": "error", "message": "Name is required"}), 400
+            
+        success = db.update_person(name, class_name, email, parent_email)
+        if success:
+            return jsonify({"status": "success", "message": f"Successfully updated details for {name}"})
+        else:
+            return jsonify({"status": "error", "message": "Failed to update details in database"}), 500
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)}), 500
+
+@app.route('/api/email/settings', methods=['GET', 'POST'])
+def manage_email_settings():
+    """Retrieve or update email server configuration settings"""
+    if request.method == 'GET':
+        try:
+            # Hide password for security
+            settings_copy = email_settings.copy()
+            if settings_copy.get("smtp_password"):
+                settings_copy["smtp_password"] = "********"
+            return jsonify({"status": "success", "settings": settings_copy})
+        except Exception as e:
+            return jsonify({"status": "error", "message": str(e)}), 500
+            
+    elif request.method == 'POST':
+        try:
+            data = request.json or {}
+            smtp_password = data.get("smtp_password", "")
+            
+            # If password is redacted placeholder, retain the existing saved password
+            if smtp_password == "********" or not smtp_password:
+                password_to_save = email_settings.get("smtp_password", "")
+            else:
+                password_to_save = smtp_password
+                
+            smtp_server = data.get("smtp_server", "").strip()
+            if "@" in smtp_server:
+                return jsonify({"status": "error", "message": "SMTP Host / Server should be a domain name (like 'smtp.gmail.com'), not an email address."}), 400
+                
+            email_settings.update({
+                "smtp_server": smtp_server,
+                "smtp_port": int(data.get("smtp_port", 587)),
+                "smtp_user": data.get("smtp_user", "").strip(),
+                "smtp_password": password_to_save,
+                "sender_name": data.get("sender_name", "").strip() or "SCAN Attendance System",
+                "email_on_attendance": bool(data.get("email_on_attendance", True)),
+                "admin_email": data.get("admin_email", "").strip()
+            })
+            
+            # Save settings persistently on disk
+            with open(EMAIL_SETTINGS_FILE, 'w') as f:
+                json.dump(email_settings, f, indent=4)
+                
+            return jsonify({"status": "success", "message": "Email settings saved successfully"})
+        except Exception as e:
+            return jsonify({"status": "error", "message": str(e)}), 500
+
+@app.route('/api/email/test', methods=['POST'])
+def send_test_email():
+    """Verify SMTP credentials by sending a test email synchronously"""
+    try:
+        data = request.json or {}
+        recipient = data.get("recipient", "").strip()
+        if not recipient:
+            recipient = email_settings.get("admin_email", "")
+        if not recipient:
+            return jsonify({"status": "error", "message": "Recipient email is required"}), 400
+            
+        subject = "SCAN SMTP Connection Test"
+        body = """
+        <div style="font-family: Arial, sans-serif; max-width: 600px; margin: auto; border: 1px solid #cbd5e1; border-radius: 8px; padding: 24px; text-align: center; box-shadow: 0 4px 12px rgba(0,0,0,0.05);">
+            <div style="background-color: #2563EB; color: white; padding: 15px; border-radius: 6px 6px 0 0;">
+                <h2 style="margin: 0; font-size: 20px;">Connection Test</h2>
+            </div>
+            <div style="padding: 20px; color: #334155; line-height: 1.6;">
+                <h3 style="color: #16A34A; margin-top: 0;">SMTP Test Successful! 🎉</h3>
+                <p>Your SCAN Face Recognition Attendance System has successfully connected to this SMTP server.</p>
+                <p>All automated notifications and reports are ready to be dispatched.</p>
+            </div>
+            <hr style="border: none; border-top: 1px solid #e2e8f0; margin: 20px 0;" />
+            <p style="color: #64748b; font-size: 12px; margin-bottom: 0;">
+                Sent from SCAN: Smart Cloud Attendance Network
+            </p>
+        </div>
+        """
+        
+        import smtplib
+        from email.mime.text import MIMEText
+        from email.mime.multipart import MIMEMultipart
+        
+        server_host = email_settings.get("smtp_server")
+        server_port = email_settings.get("smtp_port")
+        user = email_settings.get("smtp_user")
+        password = email_settings.get("smtp_password")
+        sender_name = email_settings.get("sender_name", "SCAN Attendance System")
+        
+        if not server_host or not user or not password:
+            return jsonify({"status": "error", "message": "SMTP settings are incomplete"}), 400
+            
+        msg = MIMEMultipart()
+        msg['From'] = f"{sender_name} <{user}>"
+        msg['To'] = recipient
+        msg['Subject'] = subject
+        msg.attach(MIMEText(body, 'html'))
+        
+        if int(server_port) == 465:
+            server = smtplib.SMTP_SSL(server_host, int(server_port), timeout=10)
+        else:
+            server = smtplib.SMTP(server_host, int(server_port), timeout=10)
+            server.starttls()
+            
+        server.login(user, password)
+        server.sendmail(user, recipient, msg.as_string())
+        server.quit()
+        
+        return jsonify({"status": "success", "message": f"Test email successfully sent to {recipient}"})
+    except Exception as e:
+        return jsonify({"status": "error", "message": f"SMTP connection failed: {str(e)}"}), 500
+
+
+@app.route('/api/email/absentees', methods=['POST'])
+def email_absentees():
+    """Emails parent of absent students of a class and period for a given date"""
+    try:
+        data = request.json or {}
+        class_name = data.get("class_name", "").strip()
+        period = data.get("period", "").strip()
+        date_str = data.get("date", "").strip()
+        
+        if not class_name or not period or not date_str:
+            return jsonify({"status": "error", "message": "Class, Period, and Date are required"}), 400
+            
+        # 1. Fetch all registered people in this class
+        people = db.get_all_people()
+        class_students = [p for p in people if p.get("class_name", "").lower() == class_name.lower()]
+        
+        if not class_students:
+            return jsonify({"status": "success", "message": f"No registered students found for class {class_name}", "sent_count": 0})
+            
+        # 2. Fetch attendance records for this date, class, and period
+        records = db.get_attendance_records()
+        
+        # Filter records for the specified date, class_name (case insensitive), and period
+        marked_names = set()
+        for r in records:
+            r_date = r.get("date", "")
+            r_class = r.get("class_name", "")
+            r_period = r.get("period", "")
+            if r_date == date_str and r_class.lower() == class_name.lower() and r_period.lower() == period.lower():
+                if r.get("name"):
+                    marked_names.add(r["name"].strip().lower())
+                    
+        # 3. Identify absent students (registered students who are not in marked_names)
+        absent_students = []
+        for student in class_students:
+            s_name = student.get("name", "").strip()
+            if s_name.lower() not in marked_names:
+                absent_students.append(student)
+                
+        if not absent_students:
+            return jsonify({"status": "success", "message": "All students are present. No absentee emails to send.", "sent_count": 0})
+            
+        # 4. Email each absent student's parent (if they have a parent_email)
+        sent_count = 0
+        skipped_count = 0
+        for student in absent_students:
+            s_name = student.get("name")
+            p_email = student.get("parent_email", "").strip()
+            if not p_email:
+                skipped_count += 1
+                continue
+                
+            subject = f"SCAN Absentee Notification Alert - {s_name}"
+            body = f"""
+            <div style="font-family: Arial, sans-serif; max-width: 600px; margin: auto; border: 1px solid #e2e8f0; border-radius: 8px; overflow: hidden; box-shadow: 0 4px 6px rgba(0,0,0,0.05);">
+                <div style="background-color: #EF4444; color: white; padding: 20px; text-align: center;">
+                    <h2 style="margin: 0; font-size: 24px;">SCAN Attendance Alert</h2>
+                    <p style="margin: 5px 0 0 0; opacity: 0.9;">Smart Cloud Attendance Network</p>
+                </div>
+                <div style="padding: 24px; color: #334155; line-height: 1.6;">
+                    <p>Dear Parent / Guardian,</p>
+                    <p>This is to inform you that your ward, <strong>{s_name}</strong>, was marked <strong>ABSENT</strong> today.</p>
+                    <div style="background-color: #f8fafc; border: 1px solid #f1f5f9; border-radius: 6px; padding: 16px; margin: 20px 0;">
+                        <table style="width: 100%; border-collapse: collapse;">
+                            <tr>
+                                <td style="padding: 6px 0; color: #64748b; font-weight: bold; width: 120px;">Class:</td>
+                                <td style="padding: 6px 0; color: #0f172a;">{class_name}</td>
+                            </tr>
+                            <tr>
+                                <td style="padding: 6px 0; color: #64748b; font-weight: bold;">Period:</td>
+                                <td style="padding: 6px 0; color: #0f172a;">{period}</td>
+                            </tr>
+                            <tr>
+                                <td style="padding: 6px 0; color: #64748b; font-weight: bold;">Date:</td>
+                                <td style="padding: 6px 0; color: #0f172a;">{date_str}</td>
+                            </tr>
+                            <tr>
+                                <td style="padding: 6px 0; color: #64748b; font-weight: bold;">Status:</td>
+                                <td style="padding: 6px 0; color: #EF4444; font-weight: bold;">ABSENT</td>
+                            </tr>
+                        </table>
+                    </div>
+                    <p>If you believe this is an error or if your ward was on authorized leave, please contact the school administration to rectify the records.</p>
+                </div>
+                <div style="background-color: #f1f5f9; color: #94a3b8; padding: 12px; text-align: center; font-size: 12px;">
+                    This is an automated notification from the SCAN Platform.
+                </div>
+            </div>
+            """
+            send_background_email(subject, p_email, body)
+            sent_count += 1
+            
+        message = f"Absence notification emails sent to {sent_count} parents."
+        if skipped_count > 0:
+            message += f" (Skipped {skipped_count} students without parent email registered)."
+            
+        return jsonify({"status": "success", "message": message, "sent_count": sent_count, "skipped_count": skipped_count})
+    except Exception as e:
+        return jsonify({"status": "error", "message": f"Error emailing absentees: {str(e)}"}), 500
+
+
+@app.route('/api/email/report', methods=['POST'])
+def email_report():
+    """Generates a filtered attendance Excel report and emails it to the recipient"""
+    try:
+        data = request.json or {}
+        recipient = data.get("recipient", "").strip()
+        if not recipient:
+            recipient = email_settings.get("admin_email", "")
+        if not recipient:
+            return jsonify({"status": "error", "message": "Recipient email is required"}), 400
+            
+        # Extract report filters
+        start_date = data.get("start_date", "").strip()
+        end_date = data.get("end_date", "").strip()
+        class_filter = data.get("class_name", "").strip()
+        period_filter = data.get("period", "").strip()
+        min_confidence = data.get("min_confidence")
+        
+        def format_period_time(period, time_val):
+            period = (period or "").strip()
+            time_val = (time_val or "").strip()
+            if period and period != "N/A" and time_val:
+                return f"{period} ({time_val})"
+            elif period and period != "N/A":
+                return period
+            elif time_val:
+                return time_val
+            return "N/A"
+            
+        # Fetch registered people
+        people = db.get_all_people()
+        student_data = {}
+        for p in people:
+            name = p.get("name", "").strip()
+            if name:
+                student_data[name.upper()] = {
+                    "Name": name,
+                    "Class": p.get("class_name", "") or "N/A",
+                    "Total Attendance": 0,
+                    "Dates Attended": [],
+                    "Periods & Times": []
+                }
+                
+        # Fetch and filter records
+        records = db.get_attendance_records()
+        raw_list = []
+        
+        for r in records:
+            name = r.get("name", "").strip()
+            if not name:
+                continue
+                
+            log_class = r.get("class_name", "") or "N/A"
+            log_period = r.get("period", "") or "N/A"
+            log_date = r.get("date", "")
+            log_time = r.get("time", "")
+            log_conf = r.get("confidence", 0.0)
+            
+            # Apply filters dynamically
+            if start_date and log_date < start_date:
+                continue
+            if end_date and log_date > end_date:
+                continue
+            if class_filter and class_filter != "all" and log_class != class_filter:
+                continue
+            if period_filter and period_filter != "all" and log_period != period_filter:
+                continue
+            if min_confidence is not None:
+                mc = float(min_confidence)
+                if mc > 1.0:
+                    mc = mc / 100.0
+                if log_conf < mc:
+                    continue
+                    
+            combined_pt = format_period_time(log_period, log_time)
+            
+            raw_list.append({
+                "Name": name,
+                "Class": log_class,
+                "Period & Time": combined_pt,
+                "Date": log_date,
+                "Confidence": f"{round(log_conf * 100)}%" if log_conf else "0%"
+            })
+            
+            name_key = name.upper()
+            if name_key not in student_data:
+                student_data[name_key] = {
+                    "Name": name,
+                    "Class": log_class,
+                    "Total Attendance": 0,
+                    "Dates Attended": [],
+                    "Periods & Times": []
+                }
+                
+            student_data[name_key]["Total Attendance"] += 1
+            if log_date and log_date not in student_data[name_key]["Dates Attended"]:
+                student_data[name_key]["Dates Attended"].append(log_date)
+            if combined_pt and combined_pt != "N/A" and combined_pt not in student_data[name_key]["Periods & Times"]:
+                student_data[name_key]["Periods & Times"].append(combined_pt)
+            if log_class and log_class != "N/A" and student_data[name_key]["Class"] == "N/A":
+                student_data[name_key]["Class"] = log_class
+                
+        # Format results for summary sheet
+        summary_list = []
+        for name_key, sdata in student_data.items():
+            # If class filter is applied, only show summary for students matching that class
+            if class_filter and class_filter != "all" and sdata["Class"] != class_filter:
+                continue
+            # If summary list has 0 attendance but we filtered by date range or period, we can optionally hide or show them
+            # Let's show registered students matching class filters
+            summary_list.append({
+                "Name": sdata["Name"],
+                "Class": sdata["Class"],
+                "Total Attendance": sdata["Total Attendance"],
+                "Dates Attended": ", ".join(sdata["Dates Attended"]) if sdata["Dates Attended"] else "None",
+                "Periods & Times": ", ".join(sdata["Periods & Times"]) if sdata["Periods & Times"] else "None"
+            })
+        summary_list.sort(key=lambda x: x["Name"])
+        
+        df_summary = pd.DataFrame(summary_list)
+        df_raw = pd.DataFrame(raw_list) if raw_list else pd.DataFrame(columns=["Name", "Class", "Period & Time", "Date", "Confidence"])
+        
+        output = io.BytesIO()
+        with pd.ExcelWriter(output, engine='openpyxl') as writer:
+            df_summary.to_excel(writer, index=False, sheet_name='Attendance Summary')
+            df_raw.to_excel(writer, index=False, sheet_name='Detailed Logs')
+        output.seek(0)
+        
+        # Build filter description for email body
+        filter_desc = "<ul>"
+        if start_date or end_date:
+            filter_desc += f"<li><strong>Date Range:</strong> {start_date or 'Beginning'} to {end_date or 'Present'}</li>"
+        if class_filter and class_filter != "all":
+            filter_desc += f"<li><strong>Class:</strong> {class_filter}</li>"
+        if period_filter and period_filter != "all":
+            filter_desc += f"<li><strong>Period:</strong> {period_filter}</li>"
+        if min_confidence is not None:
+            filter_desc += f"<li><strong>Min Confidence:</strong> {min_confidence}%</li>"
+        filter_desc += "</ul>"
+        if filter_desc == "<ul></ul>":
+            filter_desc = "<p>All records exported.</p>"
+            
+        subject = f"SCAN Filtered Attendance Report - {get_indian_time().strftime('%Y-%m-%d')}"
+        body = f"""
+        <div style="font-family: Arial, sans-serif; max-width: 600px; margin: auto; border: 1px solid #cbd5e1; border-radius: 8px; overflow: hidden; box-shadow: 0 4px 12px rgba(0,0,0,0.05);">
+            <div style="background-color: #2563EB; color: white; padding: 20px; text-align: center;">
+                <h2 style="margin: 0;">SCAN Attendance Report</h2>
+                <p style="margin: 5px 0 0 0; opacity: 0.9;">Exported on {get_indian_time().strftime('%Y-%m-%d %H:%M:%S')} IST</p>
+            </div>
+            <div style="padding: 24px; color: #334155; line-height: 1.6;">
+                <p>Hello,</p>
+                <p>Please find attached the requested attendance report.</p>
+                <h4 style="color: #0f172a; border-bottom: 1px solid #e2e8f0; padding-bottom: 6px; margin-top: 20px;">Applied Filters:</h4>
+                {filter_desc}
+                <div style="background-color: #f8fafc; border: 1px solid #f1f5f9; border-radius: 6px; padding: 12px; margin: 20px 0; font-size: 14px;">
+                    <strong>Total Summary Rows:</strong> {len(summary_list)}<br/>
+                    <strong>Total Detailed Log Entries:</strong> {len(raw_list)}
+                </div>
+                <p>Best regards,<br/>SCAN Admin Team</p>
+            </div>
+            <div style="background-color: #f1f5f9; color: #94a3b8; padding: 12px; text-align: center; font-size: 12px;">
+                This report was generated dynamically by SCAN: Smart Cloud Attendance Network.
+            </div>
+        </div>
+        """
+        
+        attachment_data = output.getvalue()
+        filename = f"attendance_report_{get_indian_time().strftime('%Y%m%d_%H%M%S')}.xlsx"
+        
+        send_background_email(subject, recipient, body, attachment=attachment_data, attachment_name=filename)
+        
+        return jsonify({"status": "success", "message": f"Attendance report is being emailed to {recipient}"})
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return jsonify({"status": "error", "message": str(e)}), 500
 
 @app.route('/', defaults={'path': ''})
 @app.route('/<path:path>')

@@ -63,7 +63,9 @@ class Database:
                     name TEXT PRIMARY KEY,
                     image_data TEXT NOT NULL,
                     timestamp TEXT NOT NULL,
-                    class_name TEXT
+                    class_name TEXT,
+                    email TEXT,
+                    parent_email TEXT
                 )
             """)
             cursor.execute("""
@@ -86,6 +88,14 @@ class Database:
                 cursor.execute("ALTER TABLE registered_people ADD COLUMN class_name TEXT")
             except:
                 pass
+            try:
+                cursor.execute("ALTER TABLE registered_people ADD COLUMN email TEXT")
+            except:
+                pass
+            try:
+                cursor.execute("ALTER TABLE registered_people ADD COLUMN parent_email TEXT")
+            except:
+                pass
                 
             conn.commit()
             conn.close()
@@ -103,7 +113,7 @@ class Database:
         registered_class = None
         if self.client and self.db is not None and self.people_collection is not None:
             try:
-                person = self.people_collection.find_one({"name": name})
+                person = self.people_collection.find_one({"name": {"$regex": f"^{name}$", "$options": "i"}})
                 if person:
                     registered_class = person.get("class_name")
             except Exception as e:
@@ -114,7 +124,7 @@ class Database:
                 import sqlite3
                 conn = sqlite3.connect(self.sqlite_db_path)
                 cursor = conn.cursor()
-                cursor.execute("SELECT class_name FROM registered_people WHERE name = ?", (name,))
+                cursor.execute("SELECT class_name FROM registered_people WHERE name = ? COLLATE NOCASE", (name,))
                 row = cursor.fetchone()
                 conn.close()
                 if row:
@@ -135,11 +145,14 @@ class Database:
                 # Strictly enforce duplicate check (scoped to person, date, class, and period)
                 allow_multiple = os.getenv("ALLOW_MULTIPLE_ATTENDANCE", "true").lower() == "true"
                 if not allow_multiple:
-                    query = {"name": name, "date": today_str}
+                    query = {
+                        "name": {"$regex": f"^{name}$", "$options": "i"},
+                        "date": today_str
+                    }
                     if class_name:
-                        query["class_name"] = class_name
+                        query["class_name"] = {"$regex": f"^{class_name}$", "$options": "i"}
                     if period:
-                        query["period"] = period
+                        query["period"] = {"$regex": f"^{period}$", "$options": "i"}
                     existing = self.attendance_collection.find_one(query)
                     if existing:
                         print(f"[DB] Attendance already marked for {name} today in {class_name} ({period})")
@@ -174,13 +187,13 @@ class Database:
                 
                 allow_multiple = os.getenv("ALLOW_MULTIPLE_ATTENDANCE", "true").lower() == "true"
                 if not allow_multiple:
-                    sql_query = "SELECT id FROM daily_logs WHERE name = ? AND date = ?"
+                    sql_query = "SELECT id FROM daily_logs WHERE name = ? COLLATE NOCASE AND date = ?"
                     params = [name, today_str]
                     if class_name:
-                        sql_query += " AND class_name = ?"
+                        sql_query += " AND class_name = ? COLLATE NOCASE"
                         params.append(class_name)
                     if period:
-                        sql_query += " AND period = ?"
+                        sql_query += " AND period = ? COLLATE NOCASE"
                         params.append(period)
                     cursor.execute(sql_query, tuple(params))
                     existing = cursor.fetchone()
@@ -329,9 +342,11 @@ class Database:
                 "peak_hours": []
             }
 
-    def save_person(self, name, image_data, class_name=None):
+    def save_person(self, name, image_data, class_name=None, email=None, parent_email=None):
         """Saves or updates a person's registered face image (base64) in the database"""
         db_class_name = class_name if class_name else ""
+        db_email = email if email else ""
+        db_parent_email = parent_email if parent_email else ""
         if self.client and self.db is not None and self.people_collection is not None:
             try:
                 self.people_collection.replace_one(
@@ -340,6 +355,8 @@ class Database:
                         "name": name,
                         "image_data": image_data,
                         "class_name": db_class_name,
+                        "email": db_email,
+                        "parent_email": db_parent_email,
                         "timestamp": datetime.now()
                     },
                     upsert=True
@@ -355,8 +372,8 @@ class Database:
             conn = sqlite3.connect(self.sqlite_db_path)
             cursor = conn.cursor()
             cursor.execute(
-                "INSERT OR REPLACE INTO registered_people (name, image_data, timestamp, class_name) VALUES (?, ?, ?, ?)",
-                (name, image_data, datetime.now().isoformat(), db_class_name)
+                "INSERT OR REPLACE INTO registered_people (name, image_data, timestamp, class_name, email, parent_email) VALUES (?, ?, ?, ?, ?, ?)",
+                (name, image_data, datetime.now().isoformat(), db_class_name, db_email, db_parent_email)
             )
             conn.commit()
             conn.close()
@@ -376,7 +393,9 @@ class Database:
                     people.append({
                         "name": r.get("name"),
                         "image_data": r.get("image_data"),
-                        "class_name": r.get("class_name", "")
+                        "class_name": r.get("class_name", ""),
+                        "email": r.get("email", ""),
+                        "parent_email": r.get("parent_email", "")
                     })
                 return people
             except Exception as e:
@@ -387,7 +406,7 @@ class Database:
             import sqlite3
             conn = sqlite3.connect(self.sqlite_db_path)
             cursor = conn.cursor()
-            cursor.execute("SELECT name, image_data, class_name FROM registered_people")
+            cursor.execute("SELECT name, image_data, class_name, email, parent_email FROM registered_people")
             rows = cursor.fetchall()
             conn.close()
             
@@ -396,18 +415,43 @@ class Database:
                 people.append({
                     "name": row[0],
                     "image_data": row[1],
-                    "class_name": row[2] if len(row) > 2 and row[2] is not None else ""
+                    "class_name": row[2] if len(row) > 2 and row[2] is not None else "",
+                    "email": row[3] if len(row) > 3 and row[3] is not None else "",
+                    "parent_email": row[4] if len(row) > 4 and row[4] is not None else ""
                 })
             return people
         except Exception as e:
             print(f"[DB SQLite] Error retrieving people from SQLite: {e}")
             return []
 
+    def get_student_email(self, name):
+        """Lookup student email by name"""
+        if self.client and self.db is not None and self.people_collection is not None:
+            try:
+                person = self.people_collection.find_one({"name": {"$regex": f"^{name}$", "$options": "i"}})
+                if person:
+                    return person.get("email", "")
+            except:
+                pass
+        # SQLite fallback
+        try:
+            import sqlite3
+            conn = sqlite3.connect(self.sqlite_db_path)
+            cursor = conn.cursor()
+            cursor.execute("SELECT email FROM registered_people WHERE name = ? COLLATE NOCASE", (name,))
+            row = cursor.fetchone()
+            conn.close()
+            if row:
+                return row[0] or ""
+        except Exception as e:
+            print(f"[DB SQLite] Error looking up email: {e}")
+        return ""
+
     def delete_person_db(self, name):
         """Deletes a person's registered face profile from the database"""
         if self.client and self.db is not None and self.people_collection is not None:
             try:
-                self.people_collection.delete_one({"name": name})
+                self.people_collection.delete_one({"name": {"$regex": f"^{name}$", "$options": "i"}})
                 print(f"[DB] Deleted '{name}' from MongoDB")
             except Exception as e:
                 print(f"[DB] Error deleting person from MongoDB: {e}")
@@ -417,7 +461,7 @@ class Database:
             import sqlite3
             conn = sqlite3.connect(self.sqlite_db_path)
             cursor = conn.cursor()
-            cursor.execute("DELETE FROM registered_people WHERE name = ?", (name,))
+            cursor.execute("DELETE FROM registered_people WHERE name = ? COLLATE NOCASE", (name,))
             conn.commit()
             conn.close()
             print(f"[DB SQLite] Deleted '{name}' from SQLite")
@@ -552,5 +596,42 @@ class Database:
             except Exception as e:
                 print(f"[DB SQLite] Error deleting class from SQLite: {e}")
                 return False, str(e)
+
+    def update_person(self, name, class_name=None, email=None, parent_email=None):
+        """Updates a registered person's class_name and/or email in the database"""
+        db_class_name = class_name if class_name is not None else ""
+        db_email = email if email is not None else ""
+        db_parent_email = parent_email if parent_email is not None else ""
+        
+        if self.client and self.db is not None and self.people_collection is not None:
+            try:
+                self.people_collection.update_one(
+                    {"name": {"$regex": f"^{name}$", "$options": "i"}},
+                    {"$set": {
+                        "class_name": db_class_name,
+                        "email": db_email,
+                        "parent_email": db_parent_email
+                    }}
+                )
+                print(f"[DB] Updated person '{name}' details in MongoDB")
+            except Exception as e:
+                print(f"[DB] Error updating person in MongoDB: {e}")
+                
+        # SQLite update / dual update
+        try:
+            import sqlite3
+            conn = sqlite3.connect(self.sqlite_db_path)
+            cursor = conn.cursor()
+            cursor.execute(
+                "UPDATE registered_people SET class_name = ?, email = ?, parent_email = ? WHERE name = ? COLLATE NOCASE",
+                (db_class_name, db_email, db_parent_email, name)
+            )
+            conn.commit()
+            conn.close()
+            print(f"[DB SQLite] Updated person '{name}' details in SQLite")
+            return True
+        except Exception as e:
+            print(f"[DB SQLite] Error updating person in SQLite: {e}")
+            return False
 
 db = Database()

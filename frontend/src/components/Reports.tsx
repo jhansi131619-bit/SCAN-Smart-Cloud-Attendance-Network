@@ -20,14 +20,22 @@ import {
   Chip,
   Alert,
   CircularProgress,
-  Divider
+  Divider,
+  Dialog,
+  DialogTitle,
+  DialogContent,
+  DialogActions,
+  Stack,
+  Tabs,
+  Tab
 } from '@mui/material';
 import {
   Assessment,
   GetApp,
   Person,
   FilterList,
-  Print
+  Print,
+  Email
 } from '@mui/icons-material';
 import axios from 'axios';
 import { API_BASE_URL } from '../config';
@@ -63,9 +71,14 @@ function Reports() {
   const [records, setRecords] = useState<AttendanceRecord[]>([]);
   const [filteredRecords, setFilteredRecords] = useState<AttendanceRecord[]>([]);
   const [knownPeople, setKnownPeople] = useState<string[]>([]);
+  const [peopleDetails, setPeopleDetails] = useState<any[]>([]);
   const [classes, setClasses] = useState<string[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [activeTab, setActiveTab] = useState<'present' | 'absent'>('present');
+  const [notifyingParents, setNotifyingParents] = useState(false);
+  const [notifySuccessMsg, setNotifySuccessMsg] = useState<string | null>(null);
+  const [notifyErrorMsg, setNotifyErrorMsg] = useState<string | null>(null);
   const [filters, setFilters] = useState<ReportFilters>({
     startDate: new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString().split('T')[0], // 30 days ago
     endDate: new Date().toISOString().split('T')[0], // today
@@ -74,6 +87,13 @@ function Reports() {
     class_name: 'all',
     period: 'all'
   });
+
+  // Email Report Dialog States
+  const [showEmailDialog, setShowEmailDialog] = useState(false);
+  const [emailRecipient, setEmailRecipient] = useState('');
+  const [emailSending, setEmailSending] = useState(false);
+  const [emailSuccessMsg, setEmailSuccessMsg] = useState<string | null>(null);
+  const [emailErrorMsg, setEmailErrorMsg] = useState<string | null>(null);
 
   useEffect(() => {
     fetchData();
@@ -120,15 +140,57 @@ function Reports() {
     applyFilters();
   }, [applyFilters]);
 
+  const absentStudents = React.useMemo(() => {
+    if (filters.class_name === 'all' || filters.period === 'all') {
+      return [];
+    }
+    const classStudents = peopleDetails.filter(
+      p => (p.class_name || '').toLowerCase() === filters.class_name.toLowerCase()
+    );
+    const presentNames = new Set(
+      records
+        .filter(r => 
+          r.date === filters.endDate && 
+          (r.class_name || '').toLowerCase() === filters.class_name.toLowerCase() &&
+          (r.period || '').toLowerCase() === filters.period.toLowerCase()
+        )
+        .map(r => r.name.toLowerCase())
+    );
+    return classStudents.filter(s => !presentNames.has(s.name.toLowerCase()));
+  }, [peopleDetails, records, filters.class_name, filters.period, filters.endDate]);
+
+  const handleNotifyParents = async () => {
+    try {
+      setNotifyingParents(true);
+      setNotifySuccessMsg(null);
+      setNotifyErrorMsg(null);
+      const res = await axios.post(`${API_BASE_URL}/api/email/absentees`, {
+        class_name: filters.class_name,
+        period: filters.period,
+        date: filters.endDate
+      });
+      if (res.data && res.data.status === 'success') {
+        setNotifySuccessMsg(res.data.message || 'Notifications sent successfully!');
+      } else {
+        setNotifyErrorMsg(res.data.message || 'Failed to send notifications');
+      }
+    } catch (err: any) {
+      setNotifyErrorMsg(err.response?.data?.message || 'Error communicating with notification server');
+    } finally {
+      setNotifyingParents(false);
+    }
+  };
+
   const fetchData = async () => {
     try {
       setIsLoading(true);
       setError(null);
       
-      const [attendanceResponse, facesResponse, classesResponse] = await Promise.all([
+      const [attendanceResponse, facesResponse, classesResponse, emailSettingsResponse] = await Promise.all([
         axios.get(`${API_BASE_URL}/attendance-records`),
         axios.get(`${API_BASE_URL}/known-faces`),
         axios.get(`${API_BASE_URL}/api/classes`),
+        axios.get(`${API_BASE_URL}/api/email/settings`).catch(() => null)
       ]);
 
       const attendanceData = attendanceResponse.data.records || [];
@@ -137,7 +199,12 @@ function Reports() {
       
       setRecords(attendanceData);
       setKnownPeople(facesData.map((face: any) => face.name));
+      setPeopleDetails(facesData);
       setClasses(classesData);
+
+      if (emailSettingsResponse && emailSettingsResponse.data && emailSettingsResponse.data.status === 'success') {
+        setEmailRecipient(emailSettingsResponse.data.settings.admin_email || '');
+      }
     } catch (err: any) {
       setError(err.response?.data?.message || 'Failed to fetch data');
     } finally {
@@ -189,6 +256,36 @@ function Reports() {
       lastAttendance: sortedRecords[sortedRecords.length - 1] ? 
         `${sortedRecords[sortedRecords.length - 1].date} ${sortedRecords[sortedRecords.length - 1].time}` : 'N/A'
     };
+  };
+
+  const handleEmailReport = async () => {
+    try {
+      setEmailSending(true);
+      setEmailSuccessMsg(null);
+      setEmailErrorMsg(null);
+      const res = await axios.post(`${API_BASE_URL}/api/email/report`, {
+        recipient: emailRecipient.trim(),
+        start_date: filters.startDate,
+        end_date: filters.endDate,
+        class_name: filters.class_name,
+        period: filters.period,
+        min_confidence: filters.minConfidence
+      });
+      
+      if (res.data && res.data.status === 'success') {
+        setEmailSuccessMsg(res.data.message || 'Report email has been successfully queued for delivery!');
+        setTimeout(() => {
+          setShowEmailDialog(false);
+          setEmailSuccessMsg(null);
+        }, 3000);
+      } else {
+        setEmailErrorMsg(res.data.message || 'Failed to dispatch email');
+      }
+    } catch (err: any) {
+      setEmailErrorMsg(err.response?.data?.message || 'SMTP server error occurred');
+    } finally {
+      setEmailSending(false);
+    }
   };
 
   const exportToCSV = () => {
@@ -468,56 +565,234 @@ function Reports() {
         >
           Print Report
         </Button>
+        <Button
+          variant="outlined"
+          startIcon={<Email />}
+          onClick={() => {
+            setEmailSuccessMsg(null);
+            setEmailErrorMsg(null);
+            setShowEmailDialog(true);
+          }}
+        >
+          Email Report
+        </Button>
       </Box>
 
       {/* Records Table */}
       <Card>
         <CardContent>
-          <Typography variant="h6" gutterBottom>
-            Filtered Records ({filteredRecords.length})
-          </Typography>
-          {filteredRecords.length === 0 ? (
-            <Box sx={{ textAlign: 'center', py: 4 }}>
-              <Typography variant="body1" color="text.secondary">
-                No records found for the selected filters
+          <Tabs
+            value={activeTab}
+            onChange={(e, val) => {
+              setActiveTab(val);
+              setNotifySuccessMsg(null);
+              setNotifyErrorMsg(null);
+            }}
+            sx={{ mb: 3, borderBottom: 1, borderColor: 'divider' }}
+          >
+            <Tab label={`Present (${filteredRecords.length})`} value="present" />
+            <Tab label={`Absent (${filters.class_name === 'all' || filters.period === 'all' ? 'Select Class & Period' : absentStudents.length})`} value="absent" />
+          </Tabs>
+
+          {activeTab === 'present' ? (
+            <>
+              <Typography variant="h6" gutterBottom>
+                Filtered Records ({filteredRecords.length})
               </Typography>
-            </Box>
+              {filteredRecords.length === 0 ? (
+                <Box sx={{ textAlign: 'center', py: 4 }}>
+                  <Typography variant="body1" color="text.secondary">
+                    No records found for the selected filters
+                  </Typography>
+                </Box>
+              ) : (
+                <TableContainer component={Paper} variant="outlined" sx={{ maxHeight: 500 }}>
+                  <Table stickyHeader>
+                    <TableHead>
+                      <TableRow>
+                        <TableCell sx={{ fontWeight: 600 }}>Name</TableCell>
+                        <TableCell sx={{ fontWeight: 600 }}>Class</TableCell>
+                        <TableCell sx={{ fontWeight: 600 }}>Period</TableCell>
+                        <TableCell sx={{ fontWeight: 600 }}>Date</TableCell>
+                        <TableCell sx={{ fontWeight: 600 }}>Time</TableCell>
+                        <TableCell sx={{ fontWeight: 600 }}>Confidence</TableCell>
+                      </TableRow>
+                    </TableHead>
+                    <TableBody>
+                      {filteredRecords.map((record, index) => (
+                        <TableRow key={index} hover>
+                          <TableCell sx={{ fontWeight: 500 }}>{record.name}</TableCell>
+                          <TableCell>{record.class_name || 'N/A'}</TableCell>
+                          <TableCell>{record.period || 'N/A'}</TableCell>
+                          <TableCell>{record.date}</TableCell>
+                          <TableCell>{record.time}</TableCell>
+                          <TableCell>
+                            <Chip
+                              label={`${(record.confidence * 100).toFixed(1)}%`}
+                              color={record.confidence > 0.8 ? "success" : record.confidence > 0.6 ? "warning" : "error"}
+                              size="small"
+                            />
+                          </TableCell>
+                        </TableRow>
+                      ))}
+                    </TableBody>
+                  </Table>
+                </TableContainer>
+              )}
+            </>
           ) : (
-            <TableContainer component={Paper} variant="outlined" sx={{ maxHeight: 500 }}>
-              <Table stickyHeader>
-                <TableHead>
-                  <TableRow>
-                    <TableCell sx={{ fontWeight: 600 }}>Name</TableCell>
-                    <TableCell sx={{ fontWeight: 600 }}>Class</TableCell>
-                    <TableCell sx={{ fontWeight: 600 }}>Period</TableCell>
-                    <TableCell sx={{ fontWeight: 600 }}>Date</TableCell>
-                    <TableCell sx={{ fontWeight: 600 }}>Time</TableCell>
-                    <TableCell sx={{ fontWeight: 600 }}>Confidence</TableCell>
-                  </TableRow>
-                </TableHead>
-                <TableBody>
-                  {filteredRecords.map((record, index) => (
-                    <TableRow key={index} hover>
-                      <TableCell sx={{ fontWeight: 500 }}>{record.name}</TableCell>
-                      <TableCell>{record.class_name || 'N/A'}</TableCell>
-                      <TableCell>{record.period || 'N/A'}</TableCell>
-                      <TableCell>{record.date}</TableCell>
-                      <TableCell>{record.time}</TableCell>
-                      <TableCell>
-                        <Chip
-                          label={`${(record.confidence * 100).toFixed(1)}%`}
-                          color={record.confidence > 0.8 ? "success" : record.confidence > 0.6 ? "warning" : "error"}
-                          size="small"
-                        />
-                      </TableCell>
-                    </TableRow>
-                  ))}
-                </TableBody>
-              </Table>
-            </TableContainer>
+            <>
+              <Box sx={{ mb: 3, p: 2.5, bgcolor: '#fef2f2', borderRadius: 3, border: '1px solid', borderColor: '#fee2e2' }}>
+                <Typography variant="subtitle1" color="error.main" sx={{ fontWeight: 'bold', mb: 1, display: 'flex', alignItems: 'center', gap: 1 }}>
+                  <span>📢</span> Absentee Parent Notification
+                </Typography>
+                <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
+                  Verify the list of absent students below. Clicking the button below will dispatch an automated email notification alert to each student's registered parent email for <strong>{filters.class_name === 'all' ? 'All Classes' : filters.class_name}</strong> on <strong>{filters.endDate}</strong> (Period: <strong>{filters.period}</strong>).
+                </Typography>
+
+                {filters.class_name === 'all' || filters.period === 'all' ? (
+                  <Alert severity="warning" sx={{ borderRadius: 2 }}>
+                    Please select a specific <strong>Class</strong> and <strong>Period</strong> in the filters above to load absentees and enable parent email notifications.
+                  </Alert>
+                ) : (
+                  <>
+                    {notifySuccessMsg && (
+                      <Alert severity="success" sx={{ mb: 2, borderRadius: 2 }}>
+                        {notifySuccessMsg}
+                      </Alert>
+                    )}
+                    {notifyErrorMsg && (
+                      <Alert severity="error" sx={{ mb: 2, borderRadius: 2 }}>
+                        {notifyErrorMsg}
+                      </Alert>
+                    )}
+
+                    <Button
+                      variant="contained"
+                      color="error"
+                      onClick={handleNotifyParents}
+                      disabled={notifyingParents || absentStudents.length === 0}
+                      startIcon={notifyingParents ? <CircularProgress size={20} color="inherit" /> : <Email />}
+                      sx={{ borderRadius: 2, fontWeight: 'bold', textTransform: 'none', py: 1 }}
+                    >
+                      {notifyingParents ? 'Sending Emails...' : `Notify Parents of Absence (${absentStudents.length} Students)`}
+                    </Button>
+                  </>
+                )}
+              </Box>
+
+              {filters.class_name !== 'all' && filters.period !== 'all' && (
+                <>
+                  <Typography variant="h6" gutterBottom>
+                    Absent Students ({absentStudents.length})
+                  </Typography>
+                  {absentStudents.length === 0 ? (
+                    <Box sx={{ textAlign: 'center', py: 4, bgcolor: '#f0fdf4', borderRadius: 2, border: '1px dashed', borderColor: 'success.200' }}>
+                      <Typography variant="body1" color="success.main" sx={{ fontWeight: 600 }}>
+                        🎉 All students are marked present!
+                      </Typography>
+                    </Box>
+                  ) : (
+                    <TableContainer component={Paper} variant="outlined" sx={{ maxHeight: 500 }}>
+                      <Table stickyHeader>
+                        <TableHead>
+                          <TableRow>
+                            <TableCell sx={{ fontWeight: 600 }}>Name</TableCell>
+                            <TableCell sx={{ fontWeight: 600 }}>Class</TableCell>
+                            <TableCell sx={{ fontWeight: 600 }}>Student Email</TableCell>
+                            <TableCell sx={{ fontWeight: 600 }}>Parent Email</TableCell>
+                            <TableCell sx={{ fontWeight: 600 }}>Notification Status</TableCell>
+                          </TableRow>
+                        </TableHead>
+                        <TableBody>
+                          {absentStudents.map((student, index) => (
+                            <TableRow key={index} hover>
+                              <TableCell sx={{ fontWeight: 500 }}>{student.name}</TableCell>
+                              <TableCell>{student.class_name || 'N/A'}</TableCell>
+                              <TableCell>{student.email || 'N/A'}</TableCell>
+                              <TableCell>{student.parent_email || 'N/A'}</TableCell>
+                              <TableCell>
+                                <Chip
+                                  label={student.parent_email ? "Email Configured" : "No Parent Email"}
+                                  color={student.parent_email ? "success" : "warning"}
+                                  size="small"
+                                />
+                              </TableCell>
+                            </TableRow>
+                          ))}
+                        </TableBody>
+                      </Table>
+                    </TableContainer>
+                  )}
+                </>
+              )}
+            </>
           )}
         </CardContent>
       </Card>
+
+      {/* Email Report Dialog */}
+      <Dialog
+        open={showEmailDialog}
+        onClose={() => !emailSending && setShowEmailDialog(false)}
+        maxWidth="xs"
+        fullWidth
+      >
+        <DialogTitle sx={{ fontWeight: 'bold' }}>Email Filtered Report</DialogTitle>
+        <DialogContent sx={{ pb: 1 }}>
+          <Stack spacing={2} sx={{ mt: 1 }}>
+            <Typography variant="body2" color="text.secondary">
+              The report will be filtered to match your current display filters and emailed as an Excel sheet (.xlsx).
+            </Typography>
+            
+            {emailSuccessMsg && (
+              <Alert severity="success" sx={{ borderRadius: 2 }}>
+                {emailSuccessMsg}
+              </Alert>
+            )}
+            
+            {emailErrorMsg && (
+              <Alert severity="error" sx={{ borderRadius: 2 }}>
+                {emailErrorMsg}
+              </Alert>
+            )}
+
+            <TextField
+              label="Recipient Email Address"
+              type="email"
+              fullWidth
+              placeholder="e.g. admin@school.com"
+              value={emailRecipient}
+              onChange={(e) => setEmailRecipient(e.target.value)}
+              disabled={emailSending}
+              variant="outlined"
+              sx={{
+                '& .MuiOutlinedInput-root': {
+                  borderRadius: 2,
+                }
+              }}
+            />
+          </Stack>
+        </DialogContent>
+        <DialogActions sx={{ px: 3, pb: 2 }}>
+          <Button 
+            onClick={() => setShowEmailDialog(false)} 
+            disabled={emailSending}
+            sx={{ borderRadius: 2 }}
+          >
+            Cancel
+          </Button>
+          <Button 
+            onClick={handleEmailReport} 
+            variant="contained"
+            disabled={emailSending || !emailRecipient.trim()}
+            startIcon={emailSending ? <CircularProgress size={20} color="inherit" /> : <Email />}
+            sx={{ borderRadius: 2, fontWeight: 'bold' }}
+          >
+            {emailSending ? 'Sending...' : 'Send Email'}
+          </Button>
+        </DialogActions>
+      </Dialog>
     </Box>
   );
 }

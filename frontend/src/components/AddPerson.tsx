@@ -48,6 +48,8 @@ const ANGLES = [
 function AddPerson() {
   const webcamRef = useRef<Webcam>(null);
   const [name, setName] = useState('');
+  const [email, setEmail] = useState('');
+  const [parentEmail, setParentEmail] = useState('');
   const [className, setClassName] = useState('');
   const [classes, setClasses] = useState<string[]>([]);
   const [isLoading, setIsLoading] = useState(false);
@@ -183,12 +185,16 @@ function AddPerson() {
           name: name.trim(),
           image: imageSrc,
           angle: '',
-          class_name: className
+          class_name: className,
+          email: email.trim(),
+          parent_email: parentEmail.trim()
         });
 
         setMessage(`Successfully added ${name} to the system!`);
         setIsSuccess(true);
         setName('');
+        setEmail('');
+        setParentEmail('');
         playAudio('person_added_successfully.wav');
       } catch (error: any) {
         setMessage(error.response?.data?.message || 'Failed to add person. Try switching to SCAN Live Feed if face detection fails.');
@@ -203,12 +209,16 @@ function AddPerson() {
         await axios.post(`${API_BASE_URL}/add-person-backend`, {
           name: name.trim(),
           angle: '',
-          class_name: className
+          class_name: className,
+          email: email.trim(),
+          parent_email: parentEmail.trim()
         });
 
         setMessage(`Successfully added ${name} to the system using SCAN camera!`);
         setIsSuccess(true);
         setName('');
+        setEmail('');
+        setParentEmail('');
         playAudio('person_added_successfully.wav');
       } catch (error: any) {
         setMessage(error.response?.data?.message || 'Failed to add person using SCAN camera feed. Make sure you look directly at the camera.');
@@ -240,7 +250,9 @@ function AddPerson() {
           name: name.trim(),
           image: imageSrc,
           angle: angleObj.id,
-          class_name: className
+          class_name: className,
+          email: email.trim(),
+          parent_email: parentEmail.trim()
         });
  
         // Step captured successfully!
@@ -256,6 +268,8 @@ function AddPerson() {
             await axios.post(`${API_BASE_URL}/api/retrain-model`);
             setMessage(`Congratulations! Successfully registered ${name} in High-Accuracy mode (5 angles)!`);
             setName('');
+            setEmail('');
+            setParentEmail('');
             setCurrentStep(0);
             setIsRegistering(false);
             playAudio('person_added_successfully.wav');
@@ -277,7 +291,9 @@ function AddPerson() {
         await axios.post(`${API_BASE_URL}/add-person-backend`, {
           name: name.trim(),
           angle: angleObj.id,
-          class_name: className
+          class_name: className,
+          email: email.trim(),
+          parent_email: parentEmail.trim()
         });
 
         // Step captured successfully!
@@ -293,6 +309,8 @@ function AddPerson() {
             await axios.post(`${API_BASE_URL}/api/retrain-model`);
             setMessage(`Congratulations! Successfully registered ${name} in High-Accuracy mode (5 angles)!`);
             setName('');
+            setEmail('');
+            setParentEmail('');
             setCurrentStep(0);
             setIsRegistering(false);
             playAudio('person_added_successfully.wav');
@@ -352,6 +370,28 @@ function AddPerson() {
             disabled={isRegistering}
             fullWidth
             placeholder="Enter person's name"
+            variant="outlined"
+          />
+
+          <TextField
+            label="Email Address (Optional)"
+            type="email"
+            value={email}
+            onChange={(e) => setEmail(e.target.value)}
+            disabled={isRegistering}
+            fullWidth
+            placeholder="Enter student's email address"
+            variant="outlined"
+          />
+
+          <TextField
+            label="Parent Email Address (Optional)"
+            type="email"
+            value={parentEmail}
+            onChange={(e) => setParentEmail(e.target.value)}
+            disabled={isRegistering}
+            fullWidth
+            placeholder="Enter parent's email address"
             variant="outlined"
           />
 

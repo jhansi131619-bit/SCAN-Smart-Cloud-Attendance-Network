@@ -13,9 +13,14 @@ import {
   DialogActions,
   Chip,
   Divider,
-  Stack
+  Stack,
+  TextField,
+  FormControl,
+  InputLabel,
+  Select,
+  MenuItem
 } from '@mui/material';
-import { People, Delete, Refresh } from '@mui/icons-material';
+import { People, Delete, Refresh, Edit, Save } from '@mui/icons-material';
 import axios from 'axios';
 import { API_BASE_URL } from '../config';
 
@@ -24,6 +29,8 @@ interface KnownPerson {
   image_path: string;
   date_added: string;
   class_name?: string;
+  email?: string;
+  parent_email?: string;
 }
 
 function KnownFaces() {
@@ -37,6 +44,17 @@ function KnownFaces() {
   });
   const [previewImage, setPreviewImage] = useState<string | null>(null);
 
+  // Edit Profile States
+  const [classes, setClasses] = useState<string[]>([]);
+  const [editDialog, setEditDialog] = useState<{ open: boolean; person: KnownPerson | null }>({
+    open: false,
+    person: null
+  });
+  const [editEmail, setEditEmail] = useState('');
+  const [editParentEmail, setEditParentEmail] = useState('');
+  const [editClass, setEditClass] = useState('');
+  const [editLoading, setEditLoading] = useState(false);
+
   // Class roster distribution counts
   const classCounts = useMemo(() => {
     const counts: { [key: string]: number } = {};
@@ -49,7 +67,46 @@ function KnownFaces() {
 
   useEffect(() => {
     fetchKnownFaces();
+    fetchClasses();
   }, []);
+
+  const fetchClasses = async () => {
+    try {
+      const res = await axios.get(`${API_BASE_URL}/api/classes`);
+      if (res.data && res.data.status === 'success') {
+        setClasses(res.data.classes || []);
+      }
+    } catch (err) {
+      console.error('Error fetching classes:', err);
+    }
+  };
+
+  const handleOpenEditDialog = (person: KnownPerson) => {
+    setEditDialog({ open: true, person });
+    setEditEmail(person.email || '');
+    setEditParentEmail(person.parent_email || '');
+    setEditClass(person.class_name || '');
+  };
+
+  const handleUpdatePerson = async () => {
+    if (!editDialog.person) return;
+    try {
+      setEditLoading(true);
+      setError(null);
+      await axios.post(`${API_BASE_URL}/api/update-person`, {
+        name: editDialog.person.name,
+        class_name: editClass,
+        email: editEmail.trim(),
+        parent_email: editParentEmail.trim()
+      });
+      await fetchKnownFaces();
+      setEditDialog({ open: false, person: null });
+    } catch (err: any) {
+      setError(err.response?.data?.message || 'Failed to update person details');
+    } finally {
+      setEditLoading(false);
+    }
+  };
 
   const fetchKnownFaces = async () => {
     try {
@@ -274,6 +331,30 @@ function KnownFaces() {
                   
                   <Typography 
                     variant="body2" 
+                    sx={{ 
+                      color: 'text.secondary',
+                      mb: 0.5,
+                      fontSize: { xs: '0.75rem', sm: '0.8rem' },
+                      wordBreak: 'break-all'
+                    }}
+                  >
+                    {person.email ? `Email: ${person.email}` : 'No email registered'}
+                  </Typography>
+                  
+                  <Typography 
+                    variant="body2" 
+                    sx={{ 
+                      color: 'text.secondary',
+                      mb: 0.5,
+                      fontSize: { xs: '0.75rem', sm: '0.8rem' },
+                      wordBreak: 'break-all'
+                    }}
+                  >
+                    {person.parent_email ? `Parent: ${person.parent_email}` : 'No parent email'}
+                  </Typography>
+                  
+                  <Typography 
+                    variant="body2" 
                     color="text.secondary" 
                     sx={{ 
                       mb: 2,
@@ -293,17 +374,30 @@ function KnownFaces() {
                     )}
                   </Typography>
                   
-                  <Button
-                    variant="outlined"
-                    color="error"
-                    size={window.innerWidth < 600 ? 'medium' : 'small'}
-                    startIcon={<Delete />}
-                    onClick={() => setDeleteDialog({ open: true, person })}
-                    fullWidth
-                    sx={{ fontSize: { xs: '0.875rem', sm: '0.75rem' } }}
-                  >
-                    Remove
-                  </Button>
+                  <Stack direction="row" spacing={1} sx={{ mt: 1 }}>
+                    <Button
+                      variant="outlined"
+                      color="primary"
+                      size="small"
+                      startIcon={<Edit />}
+                      onClick={() => handleOpenEditDialog(person)}
+                      fullWidth
+                      sx={{ fontSize: '0.75rem' }}
+                    >
+                      Edit
+                    </Button>
+                    <Button
+                      variant="outlined"
+                      color="error"
+                      size="small"
+                      startIcon={<Delete />}
+                      onClick={() => setDeleteDialog({ open: true, person })}
+                      fullWidth
+                      sx={{ fontSize: '0.75rem' }}
+                    >
+                      Remove
+                    </Button>
+                  </Stack>
                 </Card>
             ))}
           </Box>
@@ -325,6 +419,87 @@ function KnownFaces() {
           Removing a person will delete their face data from the system.
         </Typography>
       </Card>
+
+      {/* Edit Profile Dialog */}
+      <Dialog
+        open={editDialog.open}
+        onClose={() => !editLoading && setEditDialog({ open: false, person: null })}
+        fullWidth
+        maxWidth="xs"
+      >
+        <DialogTitle sx={{ fontWeight: 'bold' }}>
+          Edit Student Profile
+        </DialogTitle>
+        <DialogContent sx={{ pb: 1 }}>
+          <Stack spacing={3} sx={{ mt: 1 }}>
+            <TextField
+              label="Student Name"
+              value={editDialog.person?.name || ''}
+              disabled
+              fullWidth
+              variant="outlined"
+              helperText="Student name is unique and cannot be changed."
+            />
+            
+            <FormControl fullWidth>
+              <InputLabel id="edit-class-label">Class Name</InputLabel>
+              <Select
+                labelId="edit-class-label"
+                value={editClass}
+                label="Class Name"
+                onChange={(e) => setEditClass(e.target.value)}
+                disabled={editLoading}
+              >
+                <MenuItem value="">None / General</MenuItem>
+                {classes.map((cls) => (
+                  <MenuItem key={cls} value={cls}>
+                    {cls}
+                  </MenuItem>
+                ))}
+              </Select>
+            </FormControl>
+
+            <TextField
+              label="Email Address"
+              type="email"
+              value={editEmail}
+              onChange={(e) => setEditEmail(e.target.value)}
+              disabled={editLoading}
+              fullWidth
+              placeholder="e.g. student@school.com"
+              variant="outlined"
+            />
+
+            <TextField
+              label="Parent Email Address"
+              type="email"
+              value={editParentEmail}
+              onChange={(e) => setEditParentEmail(e.target.value)}
+              disabled={editLoading}
+              fullWidth
+              placeholder="e.g. parent@school.com"
+              variant="outlined"
+            />
+          </Stack>
+        </DialogContent>
+        <DialogActions sx={{ px: 3, pb: 2 }}>
+          <Button 
+            onClick={() => setEditDialog({ open: false, person: null })}
+            disabled={editLoading}
+          >
+            Cancel
+          </Button>
+          <Button 
+            onClick={handleUpdatePerson}
+            color="primary"
+            variant="contained"
+            disabled={editLoading}
+            startIcon={editLoading ? <CircularProgress size={20} color="inherit" /> : <Save />}
+          >
+            {editLoading ? 'Saving...' : 'Save Changes'}
+          </Button>
+        </DialogActions>
+      </Dialog>
 
       {/* Delete Confirmation Dialog */}
       <Dialog
