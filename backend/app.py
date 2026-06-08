@@ -103,13 +103,32 @@ email_settings = {
     "email_on_attendance": True,
     "admin_email": ""
 }
-if os.path.exists(EMAIL_SETTINGS_FILE):
+
+# Priority 1: Load from environment variables (best for Render / cloud deployments)
+env_smtp_server = os.getenv("SMTP_SERVER", "")
+env_smtp_user = os.getenv("SMTP_USER", "")
+env_smtp_password = os.getenv("SMTP_PASSWORD", "")
+if env_smtp_server and env_smtp_user and env_smtp_password:
+    email_settings.update({
+        "smtp_server": env_smtp_server,
+        "smtp_port": int(os.getenv("SMTP_PORT", "587")),
+        "smtp_user": env_smtp_user,
+        "smtp_password": env_smtp_password,
+        "sender_name": os.getenv("SMTP_SENDER_NAME", "SCAN Attendance System"),
+        "email_on_attendance": os.getenv("EMAIL_ON_ATTENDANCE", "true").lower() == "true",
+        "admin_email": os.getenv("ADMIN_EMAIL", "")
+    })
+    print("[EMAIL] SMTP settings loaded from environment variables")
+# Priority 2: Load from JSON file (local development)
+elif os.path.exists(EMAIL_SETTINGS_FILE):
     try:
         with open(EMAIL_SETTINGS_FILE, 'r') as f:
             email_settings.update(json.load(f))
-        print("Email settings loaded successfully")
+        print("[EMAIL] SMTP settings loaded from email_settings.json")
     except Exception as e:
-        print(f"Error loading email settings: {e}")
+        print(f"[EMAIL] Error loading email settings file: {e}")
+else:
+    print("[EMAIL] WARNING: No SMTP settings configured. Set SMTP_SERVER, SMTP_USER, SMTP_PASSWORD environment variables or configure via Settings page.")
 
 def send_background_email(subject, recipient, body, attachment=None, attachment_name=None):
     """Send an email in a background thread"""
