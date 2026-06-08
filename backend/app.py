@@ -123,23 +123,24 @@ if env_resend_api_key:
         "use_resend": True,
         "resend_api_key": env_resend_api_key,
         "resend_sender": env_resend_sender,
-        "sender_name": os.getenv("SMTP_SENDER_NAME", "SCAN Attendance System"),
-        "email_on_attendance": os.getenv("EMAIL_ON_ATTENDANCE", "true").lower() == "true",
-        "admin_email": os.getenv("ADMIN_EMAIL", "")
     })
     print("[EMAIL] Resend settings loaded from environment variables")
-elif env_smtp_server and env_smtp_user and env_smtp_password:
+
+if env_smtp_server and env_smtp_user and env_smtp_password:
     email_settings.update({
-        "use_resend": False,
         "smtp_server": env_smtp_server,
         "smtp_port": int(os.getenv("SMTP_PORT", "587")),
         "smtp_user": env_smtp_user,
         "smtp_password": env_smtp_password,
+    })
+    print("[EMAIL] SMTP settings loaded from environment variables")
+
+if env_resend_api_key or (env_smtp_server and env_smtp_user and env_smtp_password):
+    email_settings.update({
         "sender_name": os.getenv("SMTP_SENDER_NAME", "SCAN Attendance System"),
         "email_on_attendance": os.getenv("EMAIL_ON_ATTENDANCE", "true").lower() == "true",
         "admin_email": os.getenv("ADMIN_EMAIL", "")
     })
-    print("[EMAIL] SMTP settings loaded from environment variables")
 # Priority 2: Load from JSON file (local development)
 elif os.path.exists(EMAIL_SETTINGS_FILE):
     try:
@@ -189,7 +190,12 @@ def send_background_email(subject, recipient, body, attachment=None, attachment_
                     data=json.dumps(payload).encode('utf-8'),
                     headers={
                         "Authorization": f"Bearer {resend_api_key}",
+<<<<<<< Updated upstream
                         "Content-Type": "application/json"
+=======
+                        "Content-Type": "application/json",
+                        "User-Agent": "SCAN-Attendance/1.0"
+>>>>>>> Stashed changes
                     },
                     method="POST"
                 )
