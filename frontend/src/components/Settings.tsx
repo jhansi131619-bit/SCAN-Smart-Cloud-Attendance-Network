@@ -105,48 +105,17 @@ function Settings() {
   const [backupStatus, setBackupStatus] = useState<'idle' | 'creating' | 'success' | 'error'>('idle');
   const [retrainStatus, setRetrainStatus] = useState<'idle' | 'training' | 'success' | 'error'>('idle');
   
-  // Email Configuration State
-  const [emailSettings, setEmailSettings] = useState({
-    smtp_server: '',
-    smtp_port: 587,
-    smtp_user: '',
-    smtp_password: '',
-    sender_name: 'SCAN Attendance System',
-    email_on_attendance: false,
-    admin_email: '',
-    use_resend: false,
-    resend_api_key: '',
-    resend_sender: 'onboarding@resend.dev'
-  });
-  const [emailSettingsLoading, setEmailSettingsLoading] = useState(false);
-  const [testEmailLoading, setTestEmailLoading] = useState(false);
-  const [testEmailRecipient, setTestEmailRecipient] = useState('');
-  
+
   const [showNotification, setShowNotification] = useState<{open: boolean, message: string, severity: 'success' | 'error' | 'info'}>({
     open: false,
     message: '',
     severity: 'info'
   });
 
-  const fetchEmailSettings = async () => {
-    try {
-      setEmailSettingsLoading(true);
-      const res = await axios.get(`${API_BASE_URL}/api/email/settings`);
-      if (res.data && res.data.status === 'success') {
-        setEmailSettings(res.data.settings);
-        setTestEmailRecipient(res.data.settings.admin_email || '');
-      }
-    } catch (err) {
-      console.error('Failed to fetch email settings:', err);
-    } finally {
-      setEmailSettingsLoading(false);
-    }
-  };
 
   useEffect(() => {
     loadSettings();
     checkSystemStatus();
-    fetchEmailSettings();
     
     // Set up periodic status checks
     const interval = setInterval(checkSystemStatus, 30000);
@@ -289,40 +258,6 @@ function Settings() {
     setTimeout(() => setRetrainStatus('idle'), 3000);
   };
 
-  const handleSaveEmailSettings = async () => {
-    try {
-      setEmailSettingsLoading(true);
-      const res = await axios.post(`${API_BASE_URL}/api/email/settings`, emailSettings);
-      if (res.data && res.data.status === 'success') {
-        showNotificationMessage('SMTP email settings saved successfully!', 'success');
-        await fetchEmailSettings();
-      } else {
-        showNotificationMessage(res.data.message || 'Failed to save email settings', 'error');
-      }
-    } catch (err: any) {
-      showNotificationMessage(err.response?.data?.message || 'Failed to save email settings', 'error');
-    } finally {
-      setEmailSettingsLoading(false);
-    }
-  };
-
-  const handleTestEmail = async () => {
-    try {
-      setTestEmailLoading(true);
-      const res = await axios.post(`${API_BASE_URL}/api/email/test`, {
-        recipient: testEmailRecipient.trim()
-      });
-      if (res.data && res.data.status === 'success') {
-        showNotificationMessage(res.data.message || 'Test email sent successfully!', 'success');
-      } else {
-        showNotificationMessage(res.data.message || 'Test email failed', 'error');
-      }
-    } catch (err: any) {
-      showNotificationMessage(err.response?.data?.message || 'SMTP authentication/connection failed', 'error');
-    } finally {
-      setTestEmailLoading(false);
-    }
-  };
 
   const showNotificationMessage = (message: string, severity: 'success' | 'error' | 'info') => {
     setShowNotification({ open: true, message, severity });
@@ -670,179 +605,7 @@ function Settings() {
             </CardContent>
           </Card>
 
-        {/* Email Settings */}
-        <Card sx={{ gridColumn: { md: 'span 2' } }}>
-          <CardContent>
-            <Typography variant="h6" gutterBottom sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-              <Notifications color="primary" />
-              Email Notifications Configuration
-            </Typography>
-            <Divider sx={{ mb: 3 }} />
-            
-            {emailSettingsLoading ? (
-              <Box sx={{ display: 'flex', justifyContent: 'center', py: 4 }}>
-                <CircularProgress size={30} />
-              </Box>
-            ) : (
-              <Stack spacing={3}>
-                <FormControl fullWidth>
-                  <InputLabel id="email-method-label">Email Dispatch Method</InputLabel>
-                  <Select
-                    labelId="email-method-label"
-                    value={emailSettings.use_resend ? 'resend' : 'smtp'}
-                    label="Email Dispatch Method"
-                    onChange={(e) => setEmailSettings(prev => ({ ...prev, use_resend: e.target.value === 'resend' }))}
-                  >
-                    <MenuItem value="smtp">Standard SMTP Server (Gmail, Custom SMTP)</MenuItem>
-                    <MenuItem value="resend">Resend HTTP API (Recommended for Render free tier)</MenuItem>
-                  </Select>
-                </FormControl>
 
-                {emailSettings.use_resend ? (
-                  /* Resend Config */
-                  <Stack spacing={3}>
-                    <Box sx={{ display: 'grid', gridTemplateColumns: { xs: '1fr', sm: '1fr 1fr' }, gap: 2 }}>
-                      <TextField
-                        label="Resend API Key"
-                        type="password"
-                        placeholder="Enter your re_... API Key"
-                        value={emailSettings.resend_api_key}
-                        onChange={(e) => setEmailSettings(prev => ({ ...prev, resend_api_key: e.target.value }))}
-                        fullWidth
-                      />
-                      <TextField
-                        label="Verified Resend Sender Email"
-                        placeholder="e.g. onboarding@resend.dev"
-                        value={emailSettings.resend_sender}
-                        onChange={(e) => setEmailSettings(prev => ({ ...prev, resend_sender: e.target.value }))}
-                        helperText="Use 'onboarding@resend.dev' for testing before verifying your domain."
-                        fullWidth
-                      />
-                    </Box>
-                    
-                    <Box sx={{ display: 'grid', gridTemplateColumns: { xs: '1fr', sm: '1fr 1fr' }, gap: 2 }}>
-                      <TextField
-                        label="Sender Display Name"
-                        placeholder="e.g. SCAN Attendance System"
-                        value={emailSettings.sender_name}
-                        onChange={(e) => setEmailSettings(prev => ({ ...prev, sender_name: e.target.value }))}
-                        fullWidth
-                      />
-                      <TextField
-                        label="Admin Recipient Email"
-                        placeholder="e.g. admin@school.com"
-                        value={emailSettings.admin_email}
-                        onChange={(e) => setEmailSettings(prev => ({ ...prev, admin_email: e.target.value }))}
-                        fullWidth
-                      />
-                    </Box>
-                  </Stack>
-                ) : (
-                  /* SMTP Config */
-                  <Stack spacing={3}>
-                    <Box sx={{ display: 'grid', gridTemplateColumns: { xs: '1fr', sm: '2fr 1fr' }, gap: 2 }}>
-                      <TextField
-                        label="SMTP Host / Server"
-                        placeholder="e.g. smtp.gmail.com"
-                        value={emailSettings.smtp_server}
-                        onChange={(e) => setEmailSettings(prev => ({ ...prev, smtp_server: e.target.value }))}
-                        fullWidth
-                      />
-                      <TextField
-                        label="SMTP Port"
-                        type="number"
-                        placeholder="e.g. 587"
-                        value={emailSettings.smtp_port}
-                        onChange={(e) => setEmailSettings(prev => ({ ...prev, smtp_port: parseInt(e.target.value) || 587 }))}
-                        fullWidth
-                      />
-                    </Box>
-                    
-                    <Box sx={{ display: 'grid', gridTemplateColumns: { xs: '1fr', sm: '1fr 1fr' }, gap: 2 }}>
-                      <TextField
-                        label="SMTP Username / User Email"
-                        placeholder="e.g. your-email@gmail.com"
-                        value={emailSettings.smtp_user}
-                        onChange={(e) => setEmailSettings(prev => ({ ...prev, smtp_user: e.target.value }))}
-                        fullWidth
-                      />
-                      <TextField
-                        label="SMTP Password / App Password"
-                        type="password"
-                        placeholder="Enter password or app password"
-                        value={emailSettings.smtp_password}
-                        onChange={(e) => setEmailSettings(prev => ({ ...prev, smtp_password: e.target.value }))}
-                        fullWidth
-                      />
-                    </Box>
-                    
-                    <Box sx={{ display: 'grid', gridTemplateColumns: { xs: '1fr', sm: '1fr 1fr' }, gap: 2 }}>
-                      <TextField
-                        label="Sender Display Name"
-                        placeholder="e.g. SCAN Attendance System"
-                        value={emailSettings.sender_name}
-                        onChange={(e) => setEmailSettings(prev => ({ ...prev, sender_name: e.target.value }))}
-                        fullWidth
-                      />
-                      <TextField
-                        label="Admin Recipient Email"
-                        placeholder="e.g. admin@school.com"
-                        value={emailSettings.admin_email}
-                        onChange={(e) => setEmailSettings(prev => ({ ...prev, admin_email: e.target.value }))}
-                        fullWidth
-                      />
-                    </Box>
-                  </Stack>
-                )}
-
-                <FormControlLabel
-                  control={
-                    <Switch
-                      checked={emailSettings.email_on_attendance}
-                      onChange={(e) => setEmailSettings(prev => ({ ...prev, email_on_attendance: e.target.checked }))}
-                    />
-                  }
-                  label="Send Automated Email to Student when Attendance is Marked"
-                />
-                <Typography variant="body2" color="text.secondary" sx={{ mt: -2, ml: 4 }}>
-                  If enabled, the system will lookup the student's email and trigger an alert in the background.
-                </Typography>
-
-                <Divider sx={{ my: 1 }} />
-                
-                <Box sx={{ display: 'flex', flexDirection: { xs: 'column', sm: 'row' }, gap: 2, justifyContent: 'space-between', alignItems: 'center' }}>
-                  <Box sx={{ display: 'flex', gap: 2, alignItems: 'center', width: { xs: '100%', sm: 'auto' } }}>
-                    <TextField
-                      label="Test Recipient Email"
-                      size="small"
-                      placeholder="test@domain.com"
-                      value={testEmailRecipient}
-                      onChange={(e) => setTestEmailRecipient(e.target.value)}
-                      sx={{ minWidth: 200, flex: 1 }}
-                    />
-                    <Button
-                      variant="outlined"
-                      onClick={handleTestEmail}
-                      disabled={testEmailLoading || !testEmailRecipient.trim()}
-                      sx={{ py: 1 }}
-                    >
-                      {testEmailLoading ? 'Testing...' : 'Test Connection'}
-                    </Button>
-                  </Box>
-                  
-                  <Button
-                    variant="contained"
-                    onClick={handleSaveEmailSettings}
-                    startIcon={<Save />}
-                    sx={{ width: { xs: '100%', sm: 'auto' } }}
-                  >
-                    Save Email Config
-                  </Button>
-                </Box>
-              </Stack>
-            )}
-          </CardContent>
-        </Card>
       </Box>
 
       {/* Current Configuration Summary */}
