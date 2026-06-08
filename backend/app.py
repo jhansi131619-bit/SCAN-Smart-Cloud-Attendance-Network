@@ -190,12 +190,8 @@ def send_background_email(subject, recipient, body, attachment=None, attachment_
                     data=json.dumps(payload).encode('utf-8'),
                     headers={
                         "Authorization": f"Bearer {resend_api_key}",
-<<<<<<< Updated upstream
-                        "Content-Type": "application/json"
-=======
                         "Content-Type": "application/json",
                         "User-Agent": "SCAN-Attendance/1.0"
->>>>>>> Stashed changes
                     },
                     method="POST"
                 )
