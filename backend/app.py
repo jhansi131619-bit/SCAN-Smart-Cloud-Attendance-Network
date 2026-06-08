@@ -21,6 +21,10 @@ from PIL import Image
 import json
 from imagekitio import ImageKit
 from database import db
+import threading
+
+# Global lock for OpenCV DNN model to ensure thread-safety
+dnn_lock = threading.Lock()
 
 
 # Load environment variables from .env file if available
@@ -1865,8 +1869,9 @@ def api_recognize():
         if dnn_net is not None:
             # OpenCV DNN Face Detection
             blob = cv2.dnn.blobFromImage(cv2.resize(image, (300, 300)), 1.0, (300, 300), (104.0, 177.0, 123.0))
-            dnn_net.setInput(blob)
-            detections = dnn_net.forward()
+            with dnn_lock:
+                dnn_net.setInput(blob)
+                detections = dnn_net.forward().copy()
             
             for i in range(0, detections.shape[2]):
                 confidence = detections[0, 0, i, 2]
@@ -1988,9 +1993,11 @@ def api_recognize():
         })
         
     except Exception as e:
-        print(f"Error in /api/recognize: {str(e)}")
+        print(f"Error in /api/recognize: {str(e)}", flush=True)
         import traceback
         traceback.print_exc()
+        # Also print to stdout for PowerShell capture
+        print(traceback.format_exc(), flush=True)
         return jsonify({"success": False, "message": f"Error recognizing: {str(e)}"}), 500
 
 @app.route('/api/update-person', methods=['POST'])
@@ -2490,5 +2497,5 @@ if __name__ == '__main__':
     print(f"Known names: {known_names}")
     
     # Run the Flask app
-    app.run(host='0.0.0.0', port=PORT, debug=False)
+    app.run(host='0.0.0.0', port=PORT, debug=True)
 
