@@ -189,7 +189,8 @@ def send_background_email(subject, recipient, body, attachment=None, attachment_
                     data=json.dumps(payload).encode('utf-8'),
                     headers={
                         "Authorization": f"Bearer {resend_api_key}",
-                        "Content-Type": "application/json"
+                        "Content-Type": "application/json",
+                        "User-Agent": "Mozilla/5.0"
                     },
                     method="POST"
                 )
@@ -2134,7 +2135,8 @@ def send_test_email():
                     data=json.dumps(payload).encode('utf-8'),
                     headers={
                         "Authorization": f"Bearer {resend_api_key}",
-                        "Content-Type": "application/json"
+                        "Content-Type": "application/json",
+                        "User-Agent": "Mozilla/5.0"
                     },
                     method="POST"
                 )
