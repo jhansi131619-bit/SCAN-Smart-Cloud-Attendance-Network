@@ -78,3 +78,19 @@ attendance.xlsx
 
 # Docker
 .dockerignore
+
+# Sensitive data / Personal info
+backend/email_settings.json
+email_settings.json
+backend/scan_attendance.db
+scan_attendance.db
+*.db
+
+# Scratch / test scripts
+scratch/
+
+# API keys / secrets (already covered by .env above, but be explicit)
+backend/.env
+
+# Backups (contain student attendance data)
+backups/
