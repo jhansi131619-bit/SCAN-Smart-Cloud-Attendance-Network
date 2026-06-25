@@ -4,7 +4,9 @@
 export const API_BASE_URL = process.env.REACT_APP_API_URL || 
   (process.env.NODE_ENV === 'production' 
     ? 'https://attendance-backend-y0rt.onrender.com'
-    : 'http://127.0.0.1:5003');
+    : (typeof window !== 'undefined' 
+        ? `${window.location.protocol}//${window.location.hostname}:5003` 
+        : 'http://127.0.0.1:5003'));
 
 export const AUDIO_BASE_URL = `${API_BASE_URL}/audio`;
 export const IMAGES_BASE_URL = `${API_BASE_URL}/images`;

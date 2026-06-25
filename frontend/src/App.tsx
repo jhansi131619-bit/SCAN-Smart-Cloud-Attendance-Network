@@ -244,10 +244,10 @@ function App() {
   }, [themeMode]);
 
   useEffect(() => {
-    checkConnection();
+    checkConnection(true);
     
-    // Check connection every 30 seconds
-    const interval = setInterval(checkConnection, 30000);
+    // Check connection every 30 seconds in the background
+    const interval = setInterval(() => checkConnection(false), 30000);
     
     // Request notification permission
     if ('Notification' in window && Notification.permission === 'default') {
@@ -257,9 +257,21 @@ function App() {
     return () => clearInterval(interval);
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const checkConnection = async () => {
+  // Fast-retry polling (every 5 seconds) only when disconnected to recover quickly
+  useEffect(() => {
+    if (connectionStatus === 'disconnected') {
+      const fastInterval = setInterval(() => {
+        checkConnection(false);
+      }, 5000);
+      return () => clearInterval(fastInterval);
+    }
+  }, [connectionStatus]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const checkConnection = async (showCheckingState = false) => {
     try {
-      setConnectionStatus('checking');
+      if (showCheckingState) {
+        setConnectionStatus('checking');
+      }
       const response = await axios.get(`${API_BASE_URL}/api/health`, { timeout: 5000 });
       if (response.status === 200) {
         setConnectionStatus('connected');
@@ -678,7 +690,7 @@ function App() {
                 <IconButton 
                   color="inherit" 
                   size={window.innerWidth < 600 ? 'small' : 'medium'}
-                  onClick={checkConnection}
+                  onClick={() => checkConnection(true)}
                 >
                   {connectionStatus === 'connected' ? (
                     <CheckCircle color="success" />
@@ -826,7 +838,7 @@ function App() {
             severity="warning" 
             onClose={() => setShowConnectionAlert(false)}
             action={
-              <Button color="inherit" size="small" onClick={checkConnection}>
+              <Button color="inherit" size="small" onClick={() => checkConnection(true)}>
                 Retry
               </Button>
             }

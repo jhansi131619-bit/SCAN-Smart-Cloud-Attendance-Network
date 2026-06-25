@@ -277,14 +277,12 @@ def send_attendance_notification_email(student_name, class_name, period, time_va
             pass
     else:
         try:
-            import sqlite3
-            conn = sqlite3.connect(db.sqlite_db_path)
-            cursor = conn.cursor()
-            cursor.execute("SELECT parent_email FROM registered_people WHERE name = ? COLLATE NOCASE", (student_name,))
-            row = cursor.fetchone()
-            conn.close()
-            if row:
-                parent_email = row[0] or ""
+            with db.sqlite_conn() as conn:
+                cursor = conn.cursor()
+                cursor.execute("SELECT parent_email FROM registered_people WHERE name = ? COLLATE NOCASE", (student_name,))
+                row = cursor.fetchone()
+                if row:
+                    parent_email = row[0] or ""
         except:
             pass
 
@@ -302,16 +300,13 @@ def send_attendance_notification_email(student_name, class_name, period, time_va
                     resolved_class = person.get("class_name", "")
             except:
                 pass
-        else:
             try:
-                import sqlite3
-                conn = sqlite3.connect(db.sqlite_db_path)
-                cursor = conn.cursor()
-                cursor.execute("SELECT class_name FROM registered_people WHERE name = ? COLLATE NOCASE", (student_name,))
-                row = cursor.fetchone()
-                conn.close()
-                if row:
-                    resolved_class = row[0] or ""
+                with db.sqlite_conn() as conn:
+                    cursor = conn.cursor()
+                    cursor.execute("SELECT class_name FROM registered_people WHERE name = ? COLLATE NOCASE", (student_name,))
+                    row = cursor.fetchone()
+                    if row:
+                        resolved_class = row[0] or ""
             except:
                 pass
 
@@ -1287,16 +1282,13 @@ def mark_attendance():
                         registered_class = person.get("class_name")
                 except:
                     pass
-            else:
                 try:
-                    import sqlite3
-                    conn = sqlite3.connect(db.sqlite_db_path)
-                    cursor = conn.cursor()
-                    cursor.execute("SELECT class_name FROM registered_people WHERE name = ? COLLATE NOCASE", (recognized_name,))
-                    row = cursor.fetchone()
-                    conn.close()
-                    if row:
-                        registered_class = row[0]
+                    with db.sqlite_conn() as conn:
+                        cursor = conn.cursor()
+                        cursor.execute("SELECT class_name FROM registered_people WHERE name = ? COLLATE NOCASE", (recognized_name,))
+                        row = cursor.fetchone()
+                        if row:
+                            registered_class = row[0]
                 except:
                     pass
 
@@ -1929,14 +1921,12 @@ def api_recognize():
                                             pass
                                     else:
                                         try:
-                                            import sqlite3
-                                            conn = sqlite3.connect(db.sqlite_db_path)
-                                            cursor = conn.cursor()
-                                            cursor.execute("SELECT class_name FROM registered_people WHERE name = ? COLLATE NOCASE", (name,))
-                                            row = cursor.fetchone()
-                                            conn.close()
-                                            if row:
-                                                registered_class = row[0]
+                                             with db.sqlite_conn() as conn:
+                                                 cursor = conn.cursor()
+                                                 cursor.execute("SELECT class_name FROM registered_people WHERE name = ? COLLATE NOCASE", (name,))
+                                                 row = cursor.fetchone()
+                                                 if row:
+                                                     registered_class = row[0]
                                         except:
                                             pass
                                     

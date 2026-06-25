@@ -2,6 +2,7 @@ from pymongo import MongoClient
 from datetime import datetime, timedelta
 import os
 import pytz
+import contextlib
 from dotenv import load_dotenv
 
 # Load variables from .env file
@@ -40,65 +41,76 @@ class Database:
             self.classes_collection = None
             self.init_sqlite()
 
+    @contextlib.contextmanager
+    def sqlite_conn(self):
+        """Returns a thread-safe SQLite connection with WAL mode and 30s timeout."""
+        import sqlite3
+        conn = sqlite3.connect(self.sqlite_db_path, timeout=30.0)
+        try:
+            try:
+                conn.execute("PRAGMA journal_mode=WAL;")
+            except Exception as e:
+                print(f"[DB SQLite] Warning enabling WAL: {e}")
+            with conn:
+                yield conn
+        finally:
+            conn.close()
+
     def init_sqlite(self):
         """Initializes the local SQLite database and runs necessary migrations."""
         try:
-            import sqlite3
-            conn = sqlite3.connect(self.sqlite_db_path)
-            cursor = conn.cursor()
-            cursor.execute("""
-                CREATE TABLE IF NOT EXISTS daily_logs (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    name TEXT NOT NULL,
-                    date TEXT NOT NULL,
-                    time TEXT NOT NULL,
-                    confidence REAL NOT NULL,
-                    timestamp TEXT NOT NULL,
-                    class_name TEXT,
-                    period TEXT
-                )
-            """)
-            cursor.execute("""
-                CREATE TABLE IF NOT EXISTS registered_people (
-                    name TEXT PRIMARY KEY,
-                    image_data TEXT NOT NULL,
-                    timestamp TEXT NOT NULL,
-                    class_name TEXT,
-                    email TEXT,
-                    parent_email TEXT
-                )
-            """)
-            cursor.execute("""
-                CREATE TABLE IF NOT EXISTS classes (
-                    class_name TEXT PRIMARY KEY,
-                    timestamp TEXT NOT NULL
-                )
-            """)
-            
-            # Check and run database migrations for existing SQLite databases
-            try:
-                cursor.execute("ALTER TABLE daily_logs ADD COLUMN class_name TEXT")
-            except:
-                pass
-            try:
-                cursor.execute("ALTER TABLE daily_logs ADD COLUMN period TEXT")
-            except:
-                pass
-            try:
-                cursor.execute("ALTER TABLE registered_people ADD COLUMN class_name TEXT")
-            except:
-                pass
-            try:
-                cursor.execute("ALTER TABLE registered_people ADD COLUMN email TEXT")
-            except:
-                pass
-            try:
-                cursor.execute("ALTER TABLE registered_people ADD COLUMN parent_email TEXT")
-            except:
-                pass
+            with self.sqlite_conn() as conn:
+                cursor = conn.cursor()
+                cursor.execute("""
+                    CREATE TABLE IF NOT EXISTS daily_logs (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        name TEXT NOT NULL,
+                        date TEXT NOT NULL,
+                        time TEXT NOT NULL,
+                        confidence REAL NOT NULL,
+                        timestamp TEXT NOT NULL,
+                        class_name TEXT,
+                        period TEXT
+                    )
+                """)
+                cursor.execute("""
+                    CREATE TABLE IF NOT EXISTS registered_people (
+                        name TEXT PRIMARY KEY,
+                        image_data TEXT NOT NULL,
+                        timestamp TEXT NOT NULL,
+                        class_name TEXT,
+                        email TEXT,
+                        parent_email TEXT
+                    )
+                """)
+                cursor.execute("""
+                    CREATE TABLE IF NOT EXISTS classes (
+                        class_name TEXT PRIMARY KEY,
+                        timestamp TEXT NOT NULL
+                    )
+                """)
                 
-            conn.commit()
-            conn.close()
+                # Check and run database migrations for existing SQLite databases
+                try:
+                    cursor.execute("ALTER TABLE daily_logs ADD COLUMN class_name TEXT")
+                except:
+                    pass
+                try:
+                    cursor.execute("ALTER TABLE daily_logs ADD COLUMN period TEXT")
+                except:
+                    pass
+                try:
+                    cursor.execute("ALTER TABLE registered_people ADD COLUMN class_name TEXT")
+                except:
+                    pass
+                try:
+                    cursor.execute("ALTER TABLE registered_people ADD COLUMN email TEXT")
+                except:
+                    pass
+                try:
+                    cursor.execute("ALTER TABLE registered_people ADD COLUMN parent_email TEXT")
+                except:
+                    pass
             print(f"[DB SQLite] Initialized local database at {self.sqlite_db_path}")
         except Exception as e:
             print(f"[DB SQLite] Error initializing local database: {e}")
@@ -121,14 +133,12 @@ class Database:
         else:
             # SQLite fallback
             try:
-                import sqlite3
-                conn = sqlite3.connect(self.sqlite_db_path)
-                cursor = conn.cursor()
-                cursor.execute("SELECT class_name FROM registered_people WHERE name = ? COLLATE NOCASE", (name,))
-                row = cursor.fetchone()
-                conn.close()
-                if row:
-                    registered_class = row[0]
+                with self.sqlite_conn() as conn:
+                    cursor = conn.cursor()
+                    cursor.execute("SELECT class_name FROM registered_people WHERE name = ? COLLATE NOCASE", (name,))
+                    row = cursor.fetchone()
+                    if row:
+                        registered_class = row[0]
             except Exception as e:
                 print(f"[DB SQLite] Error finding registered class for {name}: {e}")
 
@@ -181,34 +191,28 @@ class Database:
         else:
             # SQLite fallback
             try:
-                import sqlite3
-                conn = sqlite3.connect(self.sqlite_db_path)
-                cursor = conn.cursor()
-                
-                allow_multiple = os.getenv("ALLOW_MULTIPLE_ATTENDANCE", "true").lower() == "true"
-                if not allow_multiple:
-                    sql_query = "SELECT id FROM daily_logs WHERE name = ? COLLATE NOCASE AND date = ?"
-                    params = [name, today_str]
-                    if class_name:
-                        sql_query += " AND class_name = ? COLLATE NOCASE"
-                        params.append(class_name)
-                    if period:
-                        sql_query += " AND period = ? COLLATE NOCASE"
-                        params.append(period)
-                    cursor.execute(sql_query, tuple(params))
-                    existing = cursor.fetchone()
-                    if existing:
-                        conn.close()
-                        print(f"[DB SQLite] Attendance already marked for {name} today in {class_name} ({period})")
-                        return False, "Attendance already marked for today"
-                
-                # Insert
-                cursor.execute(
-                    "INSERT INTO daily_logs (name, date, time, confidence, timestamp, class_name, period) VALUES (?, ?, ?, ?, ?, ?, ?)",
-                    (name, today_str, time_str, float(confidence), datetime.now().isoformat(), db_class_name, db_period)
-                )
-                conn.commit()
-                conn.close()
+                with self.sqlite_conn() as conn:
+                    cursor = conn.cursor()
+                    allow_multiple = os.getenv("ALLOW_MULTIPLE_ATTENDANCE", "true").lower() == "true"
+                    if not allow_multiple:
+                        sql_query = "SELECT id FROM daily_logs WHERE name = ? COLLATE NOCASE AND date = ?"
+                        params = [name, today_str]
+                        if class_name:
+                            sql_query += " AND class_name = ? COLLATE NOCASE"
+                            params.append(class_name)
+                        if period:
+                            sql_query += " AND period = ? COLLATE NOCASE"
+                            params.append(period)
+                        cursor.execute(sql_query, tuple(params))
+                        existing = cursor.fetchone()
+                        if existing:
+                            print(f"[DB SQLite] Attendance already marked for {name} today in {class_name} ({period})")
+                            return False, "Attendance already marked for today"
+                    
+                    cursor.execute(
+                        "INSERT INTO daily_logs (name, date, time, confidence, timestamp, class_name, period) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                        (name, today_str, time_str, float(confidence), datetime.now().isoformat(), db_class_name, db_period)
+                    )
                 print(f"[DB SQLite] Attendance marked for {name} at {time_str} for {db_class_name} ({db_period})")
                 return True, "Attendance marked successfully"
             except Exception as e:
@@ -237,12 +241,10 @@ class Database:
         else:
             # SQLite fallback
             try:
-                import sqlite3
-                conn = sqlite3.connect(self.sqlite_db_path)
-                cursor = conn.cursor()
-                cursor.execute("SELECT name, date, time, confidence, class_name, period FROM daily_logs ORDER BY timestamp DESC")
-                rows = cursor.fetchall()
-                conn.close()
+                with self.sqlite_conn() as conn:
+                    cursor = conn.cursor()
+                    cursor.execute("SELECT name, date, time, confidence, class_name, period FROM daily_logs ORDER BY timestamp DESC")
+                    rows = cursor.fetchall()
                 
                 result = []
                 for row in rows:
@@ -368,15 +370,12 @@ class Database:
                 
         # SQLite fallback / dual save
         try:
-            import sqlite3
-            conn = sqlite3.connect(self.sqlite_db_path)
-            cursor = conn.cursor()
-            cursor.execute(
-                "INSERT OR REPLACE INTO registered_people (name, image_data, timestamp, class_name, email, parent_email) VALUES (?, ?, ?, ?, ?, ?)",
-                (name, image_data, datetime.now().isoformat(), db_class_name, db_email, db_parent_email)
-            )
-            conn.commit()
-            conn.close()
+            with self.sqlite_conn() as conn:
+                cursor = conn.cursor()
+                cursor.execute(
+                    "INSERT OR REPLACE INTO registered_people (name, image_data, timestamp, class_name, email, parent_email) VALUES (?, ?, ?, ?, ?, ?)",
+                    (name, image_data, datetime.now().isoformat(), db_class_name, db_email, db_parent_email)
+                )
             print(f"[DB SQLite] Person '{name}' face saved to SQLite")
             return True
         except Exception as e:
@@ -403,12 +402,10 @@ class Database:
                 
         # SQLite fallback
         try:
-            import sqlite3
-            conn = sqlite3.connect(self.sqlite_db_path)
-            cursor = conn.cursor()
-            cursor.execute("SELECT name, image_data, class_name, email, parent_email FROM registered_people")
-            rows = cursor.fetchall()
-            conn.close()
+            with self.sqlite_conn() as conn:
+                cursor = conn.cursor()
+                cursor.execute("SELECT name, image_data, class_name, email, parent_email FROM registered_people")
+                rows = cursor.fetchall()
             
             people = []
             for row in rows:
@@ -435,12 +432,10 @@ class Database:
                 pass
         # SQLite fallback
         try:
-            import sqlite3
-            conn = sqlite3.connect(self.sqlite_db_path)
-            cursor = conn.cursor()
-            cursor.execute("SELECT email FROM registered_people WHERE name = ? COLLATE NOCASE", (name,))
-            row = cursor.fetchone()
-            conn.close()
+            with self.sqlite_conn() as conn:
+                cursor = conn.cursor()
+                cursor.execute("SELECT email FROM registered_people WHERE name = ? COLLATE NOCASE", (name,))
+                row = cursor.fetchone()
             if row:
                 return row[0] or ""
         except Exception as e:
@@ -458,12 +453,9 @@ class Database:
                 
         # SQLite fallback / dual delete
         try:
-            import sqlite3
-            conn = sqlite3.connect(self.sqlite_db_path)
-            cursor = conn.cursor()
-            cursor.execute("DELETE FROM registered_people WHERE name = ? COLLATE NOCASE", (name,))
-            conn.commit()
-            conn.close()
+            with self.sqlite_conn() as conn:
+                cursor = conn.cursor()
+                cursor.execute("DELETE FROM registered_people WHERE name = ? COLLATE NOCASE", (name,))
             print(f"[DB SQLite] Deleted '{name}' from SQLite")
             return True
         except Exception as e:
@@ -520,19 +512,15 @@ class Database:
         else:
             # SQLite fallback
             try:
-                import sqlite3
-                conn = sqlite3.connect(self.sqlite_db_path)
-                cursor = conn.cursor()
-                cursor.execute("SELECT class_name FROM classes WHERE class_name = ?", (class_name,))
-                if cursor.fetchone():
-                    conn.close()
-                    return False, "Class already exists"
-                cursor.execute(
-                    "INSERT INTO classes (class_name, timestamp) VALUES (?, ?)",
-                    (class_name, datetime.now().isoformat())
-                )
-                conn.commit()
-                conn.close()
+                with self.sqlite_conn() as conn:
+                    cursor = conn.cursor()
+                    cursor.execute("SELECT class_name FROM classes WHERE class_name = ?", (class_name,))
+                    if cursor.fetchone():
+                        return False, "Class already exists"
+                    cursor.execute(
+                        "INSERT INTO classes (class_name, timestamp) VALUES (?, ?)",
+                        (class_name, datetime.now().isoformat())
+                    )
                 print(f"[DB SQLite] Created class '{class_name}' in SQLite")
                 return True, "Class created successfully"
             except Exception as e:
@@ -556,12 +544,10 @@ class Database:
         else:
             # SQLite fallback
             try:
-                import sqlite3
-                conn = sqlite3.connect(self.sqlite_db_path)
-                cursor = conn.cursor()
-                cursor.execute("SELECT class_name FROM classes WHERE class_name != 'General'")
-                rows = cursor.fetchall()
-                conn.close()
+                with self.sqlite_conn() as conn:
+                    cursor = conn.cursor()
+                    cursor.execute("SELECT class_name FROM classes WHERE class_name != 'General'")
+                    rows = cursor.fetchall()
                 for row in rows:
                     classes.append(row[0])
             except Exception as e:
@@ -585,12 +571,9 @@ class Database:
         else:
             # SQLite fallback
             try:
-                import sqlite3
-                conn = sqlite3.connect(self.sqlite_db_path)
-                cursor = conn.cursor()
-                cursor.execute("DELETE FROM classes WHERE class_name = ?", (class_name,))
-                conn.commit()
-                conn.close()
+                with self.sqlite_conn() as conn:
+                    cursor = conn.cursor()
+                    cursor.execute("DELETE FROM classes WHERE class_name = ?", (class_name,))
                 print(f"[DB SQLite] Deleted class '{class_name}' from SQLite")
                 return True, "Class deleted successfully"
             except Exception as e:
@@ -619,15 +602,12 @@ class Database:
                 
         # SQLite update / dual update
         try:
-            import sqlite3
-            conn = sqlite3.connect(self.sqlite_db_path)
-            cursor = conn.cursor()
-            cursor.execute(
-                "UPDATE registered_people SET class_name = ?, email = ?, parent_email = ? WHERE name = ? COLLATE NOCASE",
-                (db_class_name, db_email, db_parent_email, name)
-            )
-            conn.commit()
-            conn.close()
+            with self.sqlite_conn() as conn:
+                cursor = conn.cursor()
+                cursor.execute(
+                    "UPDATE registered_people SET class_name = ?, email = ?, parent_email = ? WHERE name = ? COLLATE NOCASE",
+                    (db_class_name, db_email, db_parent_email, name)
+                )
             print(f"[DB SQLite] Updated person '{name}' details in SQLite")
             return True
         except Exception as e:
